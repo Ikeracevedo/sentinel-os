@@ -6,8 +6,6 @@ MEMORY
 
 ENTRY(_start)
 
-_stack_top = ORIGIN(dram) + LENGTH(dram);
-
 SECTIONS
 {
     .text :
@@ -17,6 +15,20 @@ SECTIONS
     } > iram
 
     .rodata : { *(.rodata*) } > iram
-    .data   : { *(.data*) }   > dram
-    .bss    : { *(.bss*) *(COMMON) } > dram
+
+    .data : { *(.data*) } > dram
+
+    .bss :
+    {
+        . = ALIGN(4);
+        _bss_start = .;
+        *(.bss*) *(COMMON)
+        . = ALIGN(4);
+        _bss_end = .;
+    } > dram
+
+    . = ALIGN(4);
+    _heap_start = .;
+    _heap_end = ORIGIN(dram) + LENGTH(dram) - 0x1000;
+    _stack_top = ORIGIN(dram) + LENGTH(dram);
 }

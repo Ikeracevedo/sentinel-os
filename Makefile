@@ -1,10 +1,14 @@
 PREFIX   := xtensa-esp32-elf-
 CC       := $(PREFIX)gcc
-OBJCOPY  := $(PREFIX)objcopy
 SIZE     := $(PREFIX)size
+ESPTOOL  := esptool.py
 
 BUILD    := build
 TARGET   := $(BUILD)/kernel
+
+PORT     := /dev/ttyUSB0
+BAUD     := 460800
+FLASH_ADDR := 0x1000
 
 CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
             -ffreestanding -fno-builtin -nostdlib -mlongcalls \
@@ -12,7 +16,7 @@ CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c
+SRCS_C   := kernel/core/kmain.c kernel/drivers/gpio.c
 SRCS_S   := kernel/arch/xtensa/start.S
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 
@@ -32,16 +36,19 @@ $(TARGET).elf: $(OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
 
 $(TARGET).bin: $(TARGET).elf
-	$(OBJCOPY) -O binary $< $@
+	$(ESPTOOL) --chip esp32 elf2image \
+		--flash_mode dio --flash_freq 40m --flash_size 4MB \
+		-o $@ $<
 
 size: $(TARGET).elf
 	$(SIZE) $<
 
 flash: all
-	@echo "TODO: implementar en HU-E01-04 con esptool.py elf2image + write_flash"
+	$(ESPTOOL) --chip esp32 --port $(PORT) --baud $(BAUD) \
+		write_flash $(FLASH_ADDR) $(TARGET).bin
 
 monitor:
-	@echo "TODO: implementar en HU-E01-05 (necesita UART funcionando)"
+	python3 -m serial.tools.miniterm $(PORT) 115200
 
 clean:
 	rm -rf $(BUILD)
