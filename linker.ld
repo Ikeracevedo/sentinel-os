@@ -14,7 +14,10 @@ SECTIONS
         *(.text) *(.text.*)
     } > iram
 
-    .rodata : { *(.rodata*) } > iram
+    .rodata :
+    {
+        *(.rodata) *(.rodata.*)
+    } > dram
 
     .data : { *(.data*) } > dram
 

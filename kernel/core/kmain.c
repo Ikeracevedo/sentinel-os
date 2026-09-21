@@ -1,7 +1,10 @@
+#include <sentinel/kprintf.h>
+#include <stdint.h>
 #include "../drivers/gpio.h"
+#include "../drivers/uart.h"
 
 #define LED_PIN      2
-#define BLINK_DELAY  3000000   /* sin CCOUNT todavía (HU-E01-06): a ojo */
+#define BLINK_DELAY  3000000
 
 static void delay(volatile uint32_t count) {
     while (count--) {
@@ -10,6 +13,9 @@ static void delay(volatile uint32_t count) {
 }
 
 void kmain(void) {
+    uart_init(115200);
+    kprintf("Sentinel OS v0.1 -- build %s\n", __DATE__);
+
     gpio_set_output(LED_PIN);
 
     for (;;) {
