@@ -8,6 +8,11 @@ ENTRY(_start)
 
 SECTIONS
 {
+    .vectors : ALIGN(1024)
+    {
+        *(.VectorTable.text)
+    } > iram
+
     .text :
     {
         *(.literal) *(.literal.*)

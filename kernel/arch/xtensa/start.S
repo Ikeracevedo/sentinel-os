@@ -33,6 +33,11 @@ _start:
 
     movi    a1, _stack_top     /* a1 = stack pointer */
 
+    /* Instalar nuestra propia tabla de vectores de interrupcion (HU-E01-07) */
+    movi    a2, _vector_table
+    wsr     a2, vecbase
+    rsync
+
     /* limpiar .bss: desde _bss_start hasta _bss_end, de 4 en 4 bytes */
     movi    a2, _bss_start
     movi    a3, _bss_end
