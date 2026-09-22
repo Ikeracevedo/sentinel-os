@@ -16,7 +16,7 @@ CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c
+SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c
 SRCS_S   := kernel/arch/xtensa/start.S kernel/arch/xtensa/vectors.S
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 

@@ -3,25 +3,10 @@
 #include "../arch/xtensa/cpu.h"
 #include "../drivers/gpio.h"
 #include "../drivers/uart.h"
+#include "time.h"
 
 #define LED_PIN      2
 #define BLINK_DELAY  3000000
-#define TIMER0_INT_BIT (1u << 6)
-
-static volatile uint32_t g_timer0_isr_count = 0;
-
-void irq_dispatch(void) {
-    uint32_t intr;
-    __asm__ __volatile__("rsr %0, INTERRUPT" : "=r"(intr));
-
-    if (intr & TIMER0_INT_BIT) {
-        g_timer0_isr_count++;
-        uint32_t now;
-        __asm__ __volatile__("rsr %0, CCOUNT" : "=r"(now));
-        uint32_t next = now + 100000000u;
-        __asm__ __volatile__("wsr %0, CCOMPARE0" :: "r"(next));
-    }
-}
 
 static void delay(volatile uint32_t count) {
     while (count--) {
@@ -33,22 +18,17 @@ void kmain(void) {
     uart_init(115200);
     kprintf("Sentinel OS v0.1 -- build %s\n", __DATE__);
 
-    uint32_t ps1 = irq_disable();
-    uint32_t ps2 = irq_disable();
-    irq_restore(ps2);
-    irq_restore(ps1);
-    kprintf("irq_disable/irq_restore anidados: OK\n");
+    timer_init(1000);
+    kprintf("Timer a 1000 Hz armado. Esperando 10s reales...\n");
 
-    uint32_t target;
-    __asm__ __volatile__("rsr %0, CCOUNT" : "=r"(target));
-    target += CPU_FREQ_HZ / 10u;
-    __asm__ __volatile__("wsr %0, CCOMPARE0" :: "r"(target));
-    __asm__ __volatile__("wsr %0, INTENABLE" :: "r"(TIMER0_INT_BIT));
-
-    kprintf("Esperando interrupcion de prueba...\n");
-    while (g_timer0_isr_count == 0) {
+    uint32_t start = cpu_cycles();
+    uint32_t ten_sec_cycles = 10u * CPU_FREQ_HZ;
+    while ((cpu_cycles() - start) < ten_sec_cycles) {
     }
-    kprintf("Interrupcion recibida. contador=%u\n", g_timer0_isr_count);
+
+    uint32_t ticks = timer_get_ticks();
+    kprintf("g_ticks tras 10s = %u (esperado ~10000)\n", ticks);
+
 
     gpio_set_output(LED_PIN);
 
