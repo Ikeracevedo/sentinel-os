@@ -50,6 +50,14 @@ bss_clear_loop:
     j       bss_clear_loop
 
 bss_clear_done:
+    /* Activar PS.WOE (Window Overflow Enable) 
+     * Sin esto, el primer 'entry' de una funcion windowed (kmain incluido)
+     * dispara una excepcion ilegal. Valor confirmado en esp-idf
+     * (xtensa/corebits.h: PS_WOE_MASK = 0x00040000, bit 18). */
+    movi    a2, 0x00040020
+    wsr     a2, ps
+    rsync
+
     call0   kmain
 
 halt:

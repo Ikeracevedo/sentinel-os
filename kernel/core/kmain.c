@@ -4,6 +4,8 @@
 #include "../drivers/gpio.h"
 #include "../drivers/uart.h"
 #include "time.h"
+#include <sentinel/task.h>
+
 
 #define LED_PIN      2
 #define BLINK_DELAY  3000000
