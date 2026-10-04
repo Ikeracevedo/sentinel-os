@@ -10,6 +10,12 @@
 #define TASK_CWD_LEN 32
 #define STACK_CANARY 0xDEADBEEFu
 
+#define TASK_STACK_SIZE          4096u
+#define TASK_PRIORITY_LEVELS     8u
+#define TASK_DEFAULT_QUANTUM_TICKS 10u   /* 10 ms a 1000 Hz */
+
+typedef void (*task_fn_t)(void *arg);
+
 typedef enum {
     TASK_UNUSED = 0,
     TASK_READY,
@@ -44,5 +50,11 @@ typedef struct tcb {
 
 tcb_t *task_get(uint32_t tid);
 tcb_t *task_alloc(void);
+
+tcb_t *task_current(void);
+int32_t task_create(const char *name, task_fn_t fn, void *arg,
+                    uint8_t priority, uint32_t stack_size);
+void task_exit(void) __attribute__((noreturn));
+
 
 #endif

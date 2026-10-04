@@ -5,7 +5,7 @@
 #include "../drivers/uart.h"
 #include "time.h"
 #include <sentinel/task.h>
-
+#include "../arch/xtensa/context.h"
 
 #define LED_PIN      2
 #define BLINK_DELAY  3000000
@@ -16,9 +16,36 @@ static void delay(volatile uint32_t count) {
     }
 }
 
+static void dummy_task(void *arg) {
+    (void)arg;
+    for (;;) {
+    }
+}
+
 void kmain(void) {
     uart_init(115200);
     kprintf("Sentinel OS v0.1 -- build %s\n", __DATE__);
+
+    /* TEST HU-E02-02 (temporal): creacion de tareas y marco inicial */
+    int32_t tid = task_create("tarea-a", dummy_task, (void *)0x1234, 3, 0);
+    tcb_t *t = task_get((uint32_t)tid);
+    ctx_frame_t *f = (ctx_frame_t *)(uintptr_t)t->sp;
+    kprintf("tid=%d estado=%u prio=%u nombre=%s\n",
+            tid, (uint32_t)t->state, (uint32_t)t->priority, t->name);
+    kprintf("sp alineado a 16: %u (esperado 1)\n", (uint32_t)((t->sp & 15u) == 0));
+    kprintf("canario=%x (esperado deadbeef)\n", *t->stack_base);
+    kprintf("frame: a6=%x a7=%x ps=%x (esperado a7=1234 ps=50030)\n", f->a6, f->a7, f->ps);
+    kprintf("a1 inicial=%x tope pila=%x (deben coincidir)\n",
+            t->sp + CTX_FRAME_SIZE, (uint32_t)(uintptr_t)t->stack_base + t->stack_size);
+    kprintf("fn NULL=%d prio 9=%d pila 8KB=%d (esperado -1 -1 -1)\n",
+            task_create("x", NULL, 0, 1, 0),
+            task_create("x", dummy_task, 0, 9, 0),
+            task_create("x", dummy_task, 0, 1, 8192));
+    int32_t n = 1;
+    while (task_create("x", dummy_task, 0, 7, 0) >= 0) {
+        n++;
+    }
+    kprintf("tareas creadas = %d (esperado 16)\n", n);
 
     timer_init(1000);
     kprintf("Timer a 1000 Hz armado. Esperando 10s reales...\n");

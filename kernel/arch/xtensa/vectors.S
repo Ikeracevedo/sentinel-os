@@ -84,7 +84,7 @@ _vector_table:
     j       panic_unexpected_exception
 
 .Lis_interrupt:
-    addi    a1, a1, -80
+    addi    a1, a1, -96
     s32i    a2,  a1, 8
     s32i    a3,  a1, 12
     s32i    a4,  a1, 16
@@ -138,6 +138,6 @@ _vector_table:
     l32i    a13, a1, 52
     l32i    a14, a1, 56
     l32i    a15, a1, 60
-    addi    a1, a1, 80
+    addi    a1, a1, 96
     rsr     a0, EXCSAVE_1
     rfe
