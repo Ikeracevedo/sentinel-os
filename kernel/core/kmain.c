@@ -6,6 +6,7 @@
 #include "time.h"
 #include <sentinel/task.h>
 #include "../arch/xtensa/context.h"
+#include "sched.h"
 
 #define LED_PIN      2
 #define BLINK_DELAY  3000000
@@ -21,6 +22,17 @@ static void dummy_task(void *arg) {
     for (;;) {
     }
 }
+
+static __attribute__((noinline)) uint32_t deep(uint32_t n) {
+    if (n == 0) {
+        sched_yield();
+        return 1;
+    }
+    uint32_t r = deep(n - 1);
+    __asm__ __volatile__("" : "+r"(r));
+    return r + n;
+}
+
 
 void kmain(void) {
     uart_init(115200);
@@ -46,6 +58,12 @@ void kmain(void) {
         n++;
     }
     kprintf("tareas creadas = %d (esperado 16)\n", n);
+
+    kprintf("antes de syscall\n");
+    __asm__ __volatile__("syscall");
+    kprintf("despues de syscall: volvio bien\n");
+
+    kprintf("deep(12) = %u (esperado 79)\n", deep(12));
 
     timer_init(1000);
     kprintf("Timer a 1000 Hz armado. Esperando 10s reales...\n");

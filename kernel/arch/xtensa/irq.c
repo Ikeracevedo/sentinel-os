@@ -1,5 +1,6 @@
 #include <stdint.h>
 #include "../core/time.h"
+#include "irq.h"
 
 #define TIMER0_INT_BIT (1u << 6)
 
