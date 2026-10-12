@@ -1,6 +1,10 @@
 #include <sentinel/task.h>
 #include "../arch/xtensa/context.h"
+#include <sentinel/kprintf.h>
+#include <sentinel/panic.h>
 #include "sched.h"
+#include "time.h"
+#include "../arch/xtensa/cpu.h"
 
 #define TASK_MIN_STACK_SIZE  256u
 
@@ -55,19 +59,113 @@ tcb_t *task_register_boot(const char *name) {
     copy_name(t->name, name);
     t->priority = TASK_PRIORITY_LEVELS - 1u;
     t->quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+    t->quantum_left = t->quantum_ticks;
     t->cwd[0] = '/';
     t->state = TASK_RUNNING;
     return t;
 }
 
+/* Transiciones permitidas: bit 'to' encendido en la fila 'from'. */
+static const uint8_t k_allowed[7] = {
+    [TASK_UNUSED]     = (1u << TASK_SUSPENDED),
+    [TASK_READY]      = (1u << TASK_RUNNING) | (1u << TASK_SUSPENDED) | (1u << TASK_TERMINATED),
+    [TASK_RUNNING]    = (1u << TASK_READY) | (1u << TASK_BLOCKED) | (1u << TASK_SLEEPING) |
+                        (1u << TASK_SUSPENDED) | (1u << TASK_TERMINATED),
+    [TASK_BLOCKED]    = (1u << TASK_READY) | (1u << TASK_TERMINATED),
+    [TASK_SLEEPING]   = (1u << TASK_READY) | (1u << TASK_TERMINATED),
+    [TASK_SUSPENDED]  = (1u << TASK_READY) | (1u << TASK_TERMINATED),
+    [TASK_TERMINATED] = (1u << TASK_UNUSED),
+};
+
+static int transition_ok(task_state_t from, task_state_t to) {
+    return (k_allowed[from] >> to) & 1u;
+}
+
+static void report_invalid(const tcb_t *t, task_state_t from, task_state_t to) {
+    kprintf("transicion invalida: tarea '%s' estado %u -> %u\r\n",
+            t->name, (uint32_t)from, (uint32_t)to);
+}
+
+/* Libera el TCB. El scheduler la llama al dejar una tarea TERMINATED; el
+ * resto de la tabla (pila estatica) se recicla porque la ranura queda UNUSED. */
+void task_free(tcb_t *t) {
+    for (uint32_t i = 0; i < TASK_MAX_OWNED; i++) {
+        t->owned[i] = NULL;   /* E04: aqui se soltaran los mutex que tenia */
+    }
+    t->waiting_on = NULL;
+    t->state = TASK_UNUSED;
+}
+
 void task_exit(void) {
     tcb_t *t = sched_current();
+    (void)irq_disable();
+    if (t != NULL && t->tid == 0) {
+        panic("la tarea idle no puede terminar");
+    }
     if (t != NULL) {
         t->state = TASK_TERMINATED;
     }
     for (;;) {
         sched_yield();
     }
+}
+
+int32_t task_suspend(uint32_t tid) {
+    uint32_t saved_ps = irq_disable();
+    tcb_t *t = task_get(tid);
+    int32_t rc = -1;
+    int is_current = 0;
+    int invalid = 0;
+    task_state_t seen = TASK_UNUSED;
+
+    if (t != NULL && t->tid != 0) {   /* tid 0 (idle) nunca se bloquea */
+        seen = t->state;
+        if (transition_ok(t->state, TASK_SUSPENDED)) {
+            if (t->state == TASK_READY) {
+                sched_remove_ready(t);
+            } else {
+                is_current = 1;       /* RUNNING: solo puede ser la actual */
+            }
+            t->state = TASK_SUSPENDED;
+            rc = 0;
+        } else {
+            invalid = 1;
+        }
+    }
+    if (is_current) {
+        sched_yield();
+    }
+    irq_restore(saved_ps);
+    if (invalid) {
+        report_invalid(t, seen, TASK_SUSPENDED);
+    }
+    return rc;
+}
+
+int32_t task_resume(uint32_t tid) {
+    uint32_t saved_ps = irq_disable();
+    tcb_t *t = task_get(tid);
+    int32_t rc = -1;
+    int invalid = 0;
+    task_state_t seen = TASK_UNUSED;
+
+    if (t != NULL) {
+        seen = t->state;
+        if (t->state == TASK_SUSPENDED && transition_ok(t->state, TASK_READY)) {
+            sched_make_ready(t);
+            rc = 0;
+        } else {
+            invalid = 1;
+        }
+    }
+    irq_restore(saved_ps);
+    if (invalid) {
+        report_invalid(t, seen, TASK_READY);
+    }
+    if (rc == 0) {
+        sched_preempt_check();
+    }
+    return rc;
 }
 
 /* Punto de entrada real de toda tarea: si fn retorna, la tarea termina limpia. */
@@ -109,11 +207,35 @@ int32_t task_create(const char *name, task_fn_t fn, void *arg,
     t->sp = (uint32_t)(uintptr_t)f;
     t->priority = priority;
     t->quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+    t->quantum_left = t->quantum_ticks;
     t->stack_base = (uint32_t *)base;
     t->stack_size = stack_size;
     copy_name(t->name, name);
     t->cwd[0] = '/';
-    t->state = TASK_READY;
+
+    /* Se publica al final: recien aqui el scheduler puede elegirla. */
+    uint32_t saved_ps = irq_disable();
+    sched_make_ready(t);
+    irq_restore(saved_ps);
+    sched_preempt_check();
 
     return (int32_t)t->tid;
+}
+
+/* Duerme la tarea actual. Con las interrupciones apagadas hasta ceder la CPU
+ * para que el tick no pueda colarse entre "marcar SLEEPING" y el cambio. */
+void task_sleep(uint32_t ms) {
+    tcb_t *t = sched_current();
+    if (t == NULL || t->tid == 0) {
+        return;
+    }
+    if (ms == 0) {
+        sched_yield();
+        return;
+    }
+    uint32_t saved_ps = irq_disable();
+    t->wake_at_tick = uptime_ms() + ms;
+    t->state = TASK_SLEEPING;
+    sched_yield();
+    irq_restore(saved_ps);
 }

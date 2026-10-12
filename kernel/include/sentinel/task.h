@@ -32,7 +32,9 @@ typedef struct tcb {
     task_state_t state;
     uint8_t      tid;
     uint8_t      priority;       /* 0 = maxima, 7 = idle */
-    uint32_t     quantum_ticks;
+    uint32_t     quantum_ticks;  /* cuanto configurado, en ticks (1 tick = 1 ms) */
+    uint32_t     quantum_left;   /* ticks que le quedan en su turno actual */
+    uint32_t     wake_at_tick;   /* SLEEPING: tick (ms) en que debe despertar */
     char         name[TASK_NAME_LEN];
     uint32_t    *stack_base;     /* extremo bajo de la pila (aqui vive el canario) */
     uint32_t     stack_size;     /* en bytes */
@@ -54,5 +56,9 @@ tcb_t *task_register_boot(const char *name);
 int32_t task_create(const char *name, task_fn_t fn, void *arg,
                     uint8_t priority, uint32_t stack_size);
 void task_exit(void) __attribute__((noreturn));
+void task_sleep(uint32_t ms);
+int32_t task_suspend(uint32_t tid);
+int32_t task_resume(uint32_t tid);
+void task_free(tcb_t *t);   /* libera el TCB y sus recursos; lo llama el scheduler */
 
 #endif
