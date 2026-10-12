@@ -1,6 +1,7 @@
 #include "uart.h"
 
 #define UART_FIFO_REG     (*(volatile uint32_t *)0x3ff40000)
+#define UART_FIFO_MARGIN     16u   /* no llenar el FIFO: el contador puede ir atrasado */
 #define UART_INT_RAW_REG  (*(volatile uint32_t *)0x3ff40004)
 #define UART_STATUS_REG   (*(volatile uint32_t *)0x3ff4001c)
 #define UART_CLKDIV_REG   (*(volatile uint32_t *)0x3ff40014)
@@ -33,7 +34,7 @@ void uart_init(uint32_t baudrate) {
 }
 
 void uart_putc(char c) {
-    while (((UART_STATUS_REG >> 16) & 0xFFu) >= UART_FIFO_LEN) {
+    while (((UART_STATUS_REG >> 16) & 0xFFu) >= (UART_FIFO_LEN - UART_FIFO_MARGIN)) {
     }
     UART_FIFO_REG = (uint32_t)(unsigned char)c;
 }
