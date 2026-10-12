@@ -1,11 +1,11 @@
 #include <sentinel/task.h>
 #include "../arch/xtensa/context.h"
+#include "sched.h"
 
 #define TASK_MIN_STACK_SIZE  256u
 
 static tcb_t   g_tasks[MAX_TASKS];
 static uint8_t g_stacks[MAX_TASKS][TASK_STACK_SIZE] __attribute__((aligned(16)));
-static tcb_t  *g_current = NULL;
 
 _Static_assert(offsetof(tcb_t, sp) == 0,
                "sp debe ser el primer campo del TCB (lo asume el assembly)");
@@ -34,10 +34,6 @@ tcb_t *task_get(uint32_t tid) {
     return &g_tasks[tid];
 }
 
-tcb_t *task_current(void) {
-    return g_current;
-}
-
 tcb_t *task_alloc(void) {
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) {
@@ -50,11 +46,27 @@ tcb_t *task_alloc(void) {
     return NULL;
 }
 
+/* Registra como tarea el contexto que ya esta corriendo (kmain en el arranque). */
+tcb_t *task_register_boot(const char *name) {
+    tcb_t *t = task_alloc();
+    if (t == NULL) {
+        return NULL;
+    }
+    copy_name(t->name, name);
+    t->priority = TASK_PRIORITY_LEVELS - 1u;
+    t->quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+    t->cwd[0] = '/';
+    t->state = TASK_RUNNING;
+    return t;
+}
+
 void task_exit(void) {
-    if (g_current != NULL) {
-        g_current->state = TASK_TERMINATED;
+    tcb_t *t = sched_current();
+    if (t != NULL) {
+        t->state = TASK_TERMINATED;
     }
     for (;;) {
+        sched_yield();
     }
 }
 

@@ -50,11 +50,9 @@ typedef struct tcb {
 
 tcb_t *task_get(uint32_t tid);
 tcb_t *task_alloc(void);
-
-tcb_t *task_current(void);
+tcb_t *task_register_boot(const char *name);
 int32_t task_create(const char *name, task_fn_t fn, void *arg,
                     uint8_t priority, uint32_t stack_size);
 void task_exit(void) __attribute__((noreturn));
-
 
 #endif

@@ -58,7 +58,10 @@ bss_clear_done:
     wsr     a2, ps
     rsync
 
-    call0   kmain
+    /* call4 y no call0: kmain es una funcion windowed y hace call8, asi que su
+     * spill lee el sp de su llamador desde la pila. Con call0 ese dato nunca
+     * se escribia y era basura (corrompia a4-a7 de kmain en cada cambio). */
+    call4   kmain
 
 halt:
     j       halt
