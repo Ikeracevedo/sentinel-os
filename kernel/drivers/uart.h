@@ -8,5 +8,6 @@ void uart_putc(char c);
 void uart_puts(const char *s);
 char uart_getc(void);
 void uart_flush(void);
+uint32_t uart_tx_count(void);   /* bytes enviados desde el arranque */
 
 #endif

@@ -33,10 +33,19 @@ void uart_init(uint32_t baudrate) {
     clock_settle_delay();
 }
 
+/* Bytes entregados al FIFO desde el arranque: permite medir cuantos se pierden
+ * entre el chip y el PC comparando contra los que realmente llegan. */
+static volatile uint32_t g_tx_count;
+
+uint32_t uart_tx_count(void) {
+    return g_tx_count;
+}
+
 void uart_putc(char c) {
     while (((UART_STATUS_REG >> 16) & 0xFFu) >= (UART_FIFO_LEN - UART_FIFO_MARGIN)) {
     }
     UART_FIFO_REG = (uint32_t)(unsigned char)c;
+    g_tx_count++;
 }
 
 void uart_puts(const char *s) {

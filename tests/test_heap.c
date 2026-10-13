@@ -13,6 +13,9 @@ uint8_t heap_host_tid = 0;
 static jmp_buf g_jmp;
 static int g_expect_panic;
 
+/* Simula que otra tarea nos apropia entre dos tandas de un recorrido. */
+void (*heap_host_preempt_hook)(void);
+
 void heap_host_panic(const char *msg) {
     if (g_expect_panic) {
         longjmp(g_jmp, 1);
@@ -286,6 +289,68 @@ static void test_ownership_and_peak(void) {
     CHECK(s.alloc_count == 1 && s.free_count == 1, "contadores: 1 alloc y 1 free");
 }
 
+/* ---- recorridos por tandas (heap_walk) ---- */
+
+static int g_hook_calls;
+static void *g_hook_ptr;
+
+/* Modifica el heap una sola vez: el recorrido debe notarlo y reiniciarse. */
+static void hook_alloc_once(void) {
+    if (g_hook_calls++ == 0) {
+        g_hook_ptr = kmalloc(16);
+    }
+}
+
+/* Modifica el heap SIEMPRE (alloc + free): obliga a agotar los reintentos. */
+static void hook_churn(void) {
+    g_hook_calls++;
+    void *p = kmalloc(16);
+    kfree(p);
+}
+
+static uint32_t fill_blocks(uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        kmalloc(16);
+    }
+    return n + 1u;   /* n usados + el libre del final */
+}
+
+static void test_chunked_walk(void) {
+    heap_init();
+    uint32_t blocks = fill_blocks(200);
+    heap_stats_t s = stats();
+    CHECK(s.block_count == blocks && s.walk_restarts == 0,
+          "walk: 200 bloques recorridos por tandas sin reinicios (nadie los toca)");
+
+    g_hook_calls = 0;
+    heap_host_preempt_hook = hook_alloc_once;
+    s = stats();
+    heap_host_preempt_hook = NULL;
+    CHECK(s.walk_restarts == 1, "walk: un cambio a mitad del recorrido lo reinicia 1 vez");
+    CHECK(s.block_count == blocks + 1u, "walk: tras reiniciar cuenta el bloque nuevo (resultado consistente)");
+
+    heap_init();
+    blocks = fill_blocks(200);
+    g_hook_calls = 0;
+    heap_host_preempt_hook = hook_churn;
+    s = stats();
+    heap_host_preempt_hook = NULL;
+    CHECK(s.walk_restarts == HEAP_WALK_RETRIES, "walk: con cambios constantes agota los reintentos");
+    CHECK(s.block_count == blocks, "walk: y termina con una pasada completa correcta (sin livelock)");
+
+    uint32_t bytes = 0;
+    uint32_t used = 0;
+    heap_host_tid = 7;
+    kmalloc(24);
+    kmalloc(24);
+    heap_host_tid = 0;
+    heap_usage_by_task(7, &bytes, &used);
+    CHECK(used == 2 && bytes == 56, "walk: heap_usage_by_task funciona en un heap grande");
+
+    heap_dump();
+    CHECK(1, "walk: heap_dump con >32 bloques no falla (se ve '+N bloques mas')");
+}
+
 int main(void) {
     test_init();
     test_alloc_basic();
@@ -296,6 +361,7 @@ int main(void) {
     test_double_free_and_bad_ptr();
     test_canary();
     test_ownership_and_peak();
+    test_chunked_walk();
 
     printf("\n%d asserts, %d fallos -> %s\n", g_total, g_failed, g_failed ? "FALLO" : "OK");
     return g_failed ? 1 : 0;

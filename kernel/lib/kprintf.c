@@ -2,6 +2,13 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include "../drivers/uart.h"
+#include "../arch/xtensa/cpu.h"
+
+/* EXPERIMENTO: 1 = cada kprintf corre con las interrupciones apagadas. Si con 1
+ * dejan de perderse bytes, la perdida depende de que el tick caiga a mitad de una
+ * impresion (ruta de interrupcion / spill). En produccion debe ser 0: apagar las
+ * interrupciones durante milisegundos arruina la latencia. */
+#define KPRINTF_IRQ_OFF 0
 
 static void print_unsigned(unsigned int value, unsigned int base) {
     char buf[12];
@@ -35,6 +42,9 @@ static void print_signed(int value) {
 void kprintf(const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
+#if KPRINTF_IRQ_OFF
+    uint32_t saved_ps = irq_disable();
+#endif
 
     for (const char *p = fmt; *p; p++) {
         if (*p != '%') {
@@ -73,5 +83,8 @@ void kprintf(const char *fmt, ...) {
         }
     }
 
+#if KPRINTF_IRQ_OFF
+    irq_restore(saved_ps);
+#endif
     va_end(args);
 }

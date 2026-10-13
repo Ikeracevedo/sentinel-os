@@ -48,7 +48,7 @@ flash: all
 		write_flash $(FLASH_ADDR) $(TARGET).bin
 
 monitor:
-	python3 -m serial.tools.miniterm $(PORT) 115200
+	python3 -m serial.tools.miniterm $(PORT) 57600
 
 HOSTCC   := gcc
 TEST_BIN := $(BUILD)/test_heap
