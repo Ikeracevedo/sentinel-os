@@ -25,6 +25,10 @@ typedef struct {
 
 void heap_init(void);
 
+/* Verifica en hardware que la region de la arena es RAM real (antes de heap_init). */
+uint32_t heap_probe_region(void);
+uint32_t heap_arena_address(void);
+
 /* Devuelve un puntero alineado a 4 B, o NULL si n == 0 o no hay espacio. */
 void *kmalloc(uint32_t n);
 void kfree(void *p);
@@ -35,6 +39,8 @@ void heap_stats(heap_stats_t *out);
 
 /* 100 - (mayor_libre * 100 / libre), en %. 0 si el heap esta recien iniciado. */
 uint32_t heap_fragmentation(void);
+/* Lo mismo, a partir de una foto ya tomada (evita un segundo recorrido). */
+uint32_t heap_frag_percent(const heap_stats_t *s);
 
 void heap_usage_by_task(uint8_t tid, uint32_t *bytes, uint32_t *blocks);
 

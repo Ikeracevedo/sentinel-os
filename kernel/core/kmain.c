@@ -7,6 +7,8 @@
 #include <sentinel/heap.h>
 #include <sentinel/panic.h>
 #include "selftest.h"
+#include <sentinel/vfs.h>
+#include <sentinel/procfs.h>
 #include "../arch/xtensa/cpu.h"
 
 /* 1 = correr el test de desbordamiento de pila (termina en PANIC a proposito). */
@@ -406,8 +408,8 @@ static void test_e03(void) {
         kfree(p[i]);
     }
     heap_stats(&s1);
-    check("coalescencia: todo liberado = 1 bloque y mismo libre",
-          s1.block_count == 1u && s1.free == s0.free);
+    check("coalescencia: todo liberado = mismos bloques y mismo libre que al empezar",
+          s1.block_count == s0.block_count && s1.free == s0.free);
 
     uint32_t t0 = cpu_cycles();
     heap_stats(&s1);
@@ -608,6 +610,7 @@ static void controller_task(void *arg) {
     test_hu10();
     test_e03();
     test_e04();
+    test_e05();
     if (RUN_HEAP_CANARY_TEST) {
         test_e03_corrupt();
     }
@@ -626,7 +629,16 @@ void kmain(void) {
 
     kprintf("deep(12) = %u (esperado 79)\n", deep(12));
 
+    uint32_t arena_bad = heap_probe_region();
+    kprintf("arena del heap en %p: %u palabras con error (esperado 0)\r\n",
+            (void *)(uintptr_t)heap_arena_address(), arena_bad);
+    if (arena_bad != 0u) {
+        panic("la region del heap no es RAM fiable");
+    }
     heap_init();
+    vfs_init();
+    procfs_init();
+    vfs_populate_demo();
     timer_init(1000);
     sched_init();
     task_create("ctl", controller_task, (void *)0, 0, 0);

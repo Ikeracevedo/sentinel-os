@@ -96,7 +96,9 @@ _Static_assert(HEAP_SIZE % HEAP_ALIGN == 0, "HEAP_SIZE debe ser multiplo de la a
 _Static_assert(HEAP_SIZE % HEAP_DUMP_CELLS == 0, "HEAP_SIZE debe dividirse en celdas exactas");
 _Static_assert(HEAP_DUMP_CELL_SIZE <= 0xFFFFu, "una celda debe caber en uint16_t");
 
-static uint8_t g_arena[HEAP_SIZE] __attribute__((aligned(16)));
+/* En la placa la arena vive en SRAM1 (seccion .dram1 del linker, ADR-017): libera 96 KB de
+ * la DRAM principal. En el PC es una seccion mas, sin efecto. */
+static uint8_t g_arena[HEAP_SIZE] __attribute__((aligned(16), section(".dram1")));
 
 /* Contadores incrementales: 'used' y el pico cuestan O(1) en cada operacion. */
 static uint32_t g_free_bytes;
@@ -140,6 +142,34 @@ static void check_canary(block_t *b) {
                     task_name_of(b->owner_tid), (uint32_t)b->owner_tid);
         HEAP_PANIC("heap: escritura fuera de los limites de un bloque");
     }
+}
+
+/* Prueba de la region de la arena (se llama ANTES de heap_init): escribe dos patrones
+ * distintos por palabra y los verifica. Devuelve el numero de palabras que no coinciden.
+ * Sirve para comprobar en hardware que la region del linker es RAM real. */
+uint32_t heap_probe_region(void) {
+    volatile uint32_t *w = (volatile uint32_t *)(void *)g_arena;
+    uint32_t words = HEAP_SIZE / 4u;
+    uint32_t bad = 0;
+    for (uint32_t i = 0; i < words; i++) {
+        w[i] = 0xA5A5A5A5u ^ i;
+    }
+    for (uint32_t i = 0; i < words; i++) {
+        if (w[i] != (0xA5A5A5A5u ^ i)) {
+            bad++;
+        }
+        w[i] = ~(0xA5A5A5A5u ^ i);
+    }
+    for (uint32_t i = 0; i < words; i++) {
+        if (w[i] != ~(0xA5A5A5A5u ^ i)) {
+            bad++;
+        }
+    }
+    return bad;
+}
+
+uint32_t heap_arena_address(void) {
+    return (uint32_t)(uintptr_t)g_arena;
 }
 
 void heap_init(void) {
@@ -380,6 +410,10 @@ static uint32_t frag_of(const heap_stats_t *s) {
         return 0;
     }
     return 100u - (s->largest_free_block * 100u) / s->free;
+}
+
+uint32_t heap_frag_percent(const heap_stats_t *s) {
+    return frag_of(s);
 }
 
 uint32_t heap_fragmentation(void) {

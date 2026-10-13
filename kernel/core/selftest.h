@@ -13,5 +13,6 @@ void selftest_summary(void);
 
 /* Pruebas por epica (cada una en su archivo). */
 void test_e04(void);
+void test_e05(void);
 
 #endif

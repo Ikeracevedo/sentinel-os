@@ -5,6 +5,7 @@
 #include "sched.h"
 #include <sentinel/sync.h>
 #include <sentinel/heap.h>
+#include <sentinel/vfs.h>
 #include "time.h"
 #include "../arch/xtensa/cpu.h"
 
@@ -91,6 +92,7 @@ static void report_invalid(const tcb_t *t, task_state_t from, task_state_t to) {
 /* Libera el TCB. El scheduler la llama al dejar una tarea TERMINATED; el
  * resto de la tabla (pila estatica) se recicla porque la ranura queda UNUSED. */
 void task_free(tcb_t *t) {
+    vfs_task_cleanup(t);   /* E05: cierra sus descriptores y suelta su cwd */
     sync_release_all(t);   /* E04: sus mutex pasan (con traspaso) a quien los esperaba */
     for (uint32_t i = 0; i < TASK_MAX_OWNED; i++) {
         t->owned[i] = NULL;
@@ -255,6 +257,7 @@ int32_t task_create(const char *name, task_fn_t fn, void *arg,
     t->stack_size = stack_size;
     copy_name(t->name, name);
     t->cwd[0] = '/';
+    vfs_task_init(t);      /* hereda el directorio actual de quien la crea */
 
     /* Se publica al final: recien aqui el scheduler puede elegirla. */
     uint32_t saved_ps = irq_disable();

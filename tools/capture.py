@@ -17,7 +17,10 @@ do_reset = '--no-reset' not in sys.argv
 baud = 115200
 if '--baud' in sys.argv:
     baud = int(sys.argv[sys.argv.index('--baud') + 1])
-s = serial.Serial('/dev/ttyUSB0', baud, timeout=1)
+import glob
+ports = sorted(glob.glob('/dev/ttyUSB*'), key=lambda p: int(p[len('/dev/ttyUSB'):]))
+port = ports[-1] if ports else '/dev/ttyUSB0'   # el mas reciente (usbipd puede renumerar)
+s = serial.Serial(port, baud, timeout=1)
 if do_reset:
     s.setDTR(False)
     s.setRTS(True)
