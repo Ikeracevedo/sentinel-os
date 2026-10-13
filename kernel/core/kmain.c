@@ -29,9 +29,15 @@
 #define RUN_SHELL       1
 #endif
 
+#ifndef RUN_SOAK
 #define RUN_SOAK        0
+#endif
+#ifndef SOAK_SECONDS
 #define SOAK_SECONDS    300u
+#endif
+#ifndef SOAK_REPORT_S
 #define SOAK_REPORT_S   10u
+#endif
 
 static volatile uint32_t g_c;
 static volatile uint32_t g_stop_c;
