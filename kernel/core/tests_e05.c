@@ -203,6 +203,31 @@ static void t_cleanup(void) {
     check("tras `kill` se libera su cwd y el arbol se puede borrar", vfs_rm_recursive("/tmp/k", NULL) == 0);
 }
 
+/* ---- correccion de la revision: el arbol del VFS no pertenece a la tarea que lo creo ---- */
+
+static void file_maker(void *arg) {
+    (void)arg;
+    vfs_create("/tmp/de_la_tarea", NULL);
+    vfs_write(vfs_resolve("/tmp/de_la_tarea", NULL), 0, "sigo vivo", 9);
+    for (;;) {
+        task_sleep(100);
+    }
+}
+
+static void t_kill_keeps_tree(void) {
+    int32_t t = task_create("fmaker", file_maker, (void *)0, 2, 0);
+    task_sleep(60);
+    vnode_t *f = vfs_resolve("/tmp/de_la_tarea", NULL);
+    check("la tarea creo un archivo en el VFS", f != NULL && f->size == 9u);
+    task_kill((uint32_t)t);
+    char buf[16];
+    f = vfs_resolve("/tmp/de_la_tarea", NULL);
+    int n = (f != NULL) ? vfs_read(f, 0, buf, sizeof(buf) - 1u) : -1;
+    check("tras `kill` el archivo sigue intacto (no hay punteros colgantes)",
+          f != NULL && n == 9 && buf[0] == 's' && buf[8] == 'o');
+    vfs_unlink("/tmp/de_la_tarea", NULL);
+}
+
 /* ---- F2: fugas ---- */
 
 static void t_leaks(void) {
@@ -240,6 +265,7 @@ void test_e05(void) {
     t_proc();
     t_cwd();
     t_cleanup();
+    t_kill_keeps_tree();
     t_leaks();
     kprintf("fin de pruebas E05\r\n");
 }

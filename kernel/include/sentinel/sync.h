@@ -7,6 +7,9 @@
 #define MAX_MUTEXES    16
 #define SYNC_NAME_LEN  16
 
+/* Plazos mayores que esto (~24,8 dias) se recortan: el tick compara con resta con signo. */
+#define SYNC_MAX_TIMEOUT_MS  0x7FFFFFFFu
+
 #define WAIT_NONE   0u
 #define WAIT_MUTEX  1u
 #define WAIT_SEM    2u
@@ -36,8 +39,8 @@ typedef struct semaphore {
  * prioridad (a proposito: la inversion se provoca en E09 y se resuelve en E18).
  * Solo desde tareas: bloquean. */
 void mutex_init(mutex_t *m, const char *name);
-void mutex_destroy(mutex_t *m);
-int  mutex_lock(mutex_t *m);                        /* 0 ok, -2 reentrada del propio dueno */
+int  mutex_destroy(mutex_t *m);                    /* 0 ok, -1 si esta en uso (dueno o esperadores) */
+int  mutex_lock(mutex_t *m);                        /* 0 ok, -2 reentrada, -3 ya posee el maximo (8) */
 int  mutex_lock_timeout(mutex_t *m, uint32_t ms);   /* 0 ok, -1 expiro, -2 reentrada */
 int  mutex_unlock(mutex_t *m);                      /* 0 ok, -1 si quien llama no es el dueno */
 

@@ -33,6 +33,9 @@ uint32_t heap_arena_address(void);
 void *kmalloc(uint32_t n);
 void kfree(void *p);
 
+/* Como kmalloc, pero el bloque se atribuye a 'owner' (0 = kernel: no lo libera task_kill). */
+void *kmalloc_owner(uint32_t n, uint8_t owner);
+
 /* Recorre la lista (O(n)), verifica magic y canarios. Segura desde un ISR.
  * Mantiene las interrupciones apagadas como maximo HEAP_WALK_CHUNK bloques seguidos. */
 void heap_stats(heap_stats_t *out);

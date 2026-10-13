@@ -84,14 +84,20 @@ void mutex_init(mutex_t *m, const char *name) {
     CRITICAL_EXIT();
 }
 
-void mutex_destroy(mutex_t *m) {
+int mutex_destroy(mutex_t *m) {
+    int rc = 0;
     CRITICAL_ENTER();
-    for (uint32_t i = 0; i < MAX_MUTEXES; i++) {
-        if (g_registry[i] == m) {
-            g_registry[i] = NULL;
+    if (m->owner != NULL || m->q.count > 0u) {
+        rc = -1;                       /* en uso: destruirlo dejaria punteros colgantes */
+    } else {
+        for (uint32_t i = 0; i < MAX_MUTEXES; i++) {
+            if (g_registry[i] == m) {
+                g_registry[i] = NULL;
+            }
         }
     }
     CRITICAL_EXIT();
+    return rc;
 }
 
 /* Entrega m a t. Con las interrupciones apagadas. */
@@ -107,8 +113,16 @@ static void mutex_grant(mutex_t *m, tcb_t *t) {
 static int lock_common(mutex_t *m, int timed, uint32_t ms) {
     tcb_t *t = sched_current();
     PROBE_LOCK_TRY(m);
+    if (ms > SYNC_MAX_TIMEOUT_MS) {
+        ms = SYNC_MAX_TIMEOUT_MS;      /* la resta con signo del tick solo ve plazos < 2^31 */
+    }
 
     uint32_t ps = irq_save();
+    if (t->owned_count >= TASK_MAX_OWNED) {
+        irq_restore(ps);
+        kprintf("mutex_lock: '%s' ya posee %u mutex (maximo)\r\n", t->name, (uint32_t)TASK_MAX_OWNED);
+        return -3;                     /* asi nunca se concede un mutex sin registrarlo en owned[] */
+    }
     if (m->owner == t) {
         irq_restore(ps);
         kprintf("mutex_lock: '%s' ya es propietaria de '%s' (no es recursivo)\r\n", t->name, m->name);
@@ -206,6 +220,9 @@ void sem_init(sem_t *s, int32_t initial) {
 
 static int sem_wait_common(sem_t *s, int timed, uint32_t ms) {
     tcb_t *t = sched_current();
+    if (ms > SYNC_MAX_TIMEOUT_MS) {
+        ms = SYNC_MAX_TIMEOUT_MS;
+    }
 
     uint32_t ps = irq_save();
     if (s->count > 0) {

@@ -371,13 +371,23 @@ static int cmd_ps(int argc, char **argv) {
     int verbose = (argc >= 2 && str_eq(argv[1], "-v"));
 
     /* % de CPU sobre la ventana desde el ultimo `ps` (la primera vez, desde el arranque). */
+    /* cpu_cycles es de 64 bits y el tick lo actualiza: en un nucleo de 32 bits una lectura
+     * normal podria partirse justo en el acarreo. Se toma una foto de todos bajo candado. */
+    uint64_t cyc[MAX_TASKS];
+    uint32_t ps = irq_save();
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        tcb_t *t = task_get(i);
+        cyc[i] = (t != NULL) ? t->cpu_cycles : 0u;
+    }
+    irq_restore(ps);
+
     uint64_t delta[MAX_TASKS];
     uint64_t total = 0;
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
         delta[i] = 0;
         if (t != NULL) {
-            delta[i] = (g_prev_valid[i]) ? (t->cpu_cycles - g_prev_cycles[i]) : t->cpu_cycles;
+            delta[i] = (g_prev_valid[i]) ? (cyc[i] - g_prev_cycles[i]) : cyc[i];
             total += delta[i];
         }
     }
@@ -414,7 +424,7 @@ static int cmd_ps(int argc, char **argv) {
         }
         kprintf("%3u %4u%% %6u", (uint32_t)t->priority, pct, mem);
         if (verbose) {
-            kprintf("  %7u %6u %9u  %u/%u", t->switches_in, cycles_to_ms64(t->cpu_cycles),
+            kprintf("  %7u %6u %9u  %u/%u", t->switches_in, cycles_to_ms64(cyc[i]),
                     t->max_ready_wait, task_stack_used(t), t->stack_size);
         }
         kprintf("\r\n");
@@ -422,7 +432,7 @@ static int cmd_ps(int argc, char **argv) {
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
         g_prev_valid[i] = (t != NULL);
-        g_prev_cycles[i] = (t != NULL) ? t->cpu_cycles : 0;
+        g_prev_cycles[i] = cyc[i];
     }
     return 0;
 }

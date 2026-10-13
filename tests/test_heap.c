@@ -376,6 +376,23 @@ static void test_free_owned(void) {
     CHECK(same_layout(initial, stats()), "free_owned: todo liberado = estado inicial exacto (coalescencia)");
 }
 
+static void test_owner_override(void) {
+    heap_init();
+    heap_host_tid = 5;
+    void *mine = kmalloc(30);
+    void *kernel = kmalloc_owner(30, 0);          /* atribuido al kernel aunque lo pida la tarea 5 */
+    heap_host_tid = 0;
+    uint32_t bytes = 0;
+    uint32_t blocks = 0;
+    heap_usage_by_task(5, &bytes, &blocks);
+    CHECK(blocks == 1, "kmalloc_owner(…, 0) no se cuenta como de la tarea que lo pidio");
+    CHECK(heap_free_owned(5) == 1, "free_owned(5) libera solo el bloque propio");
+    heap_usage_by_task(0, &bytes, &blocks);
+    CHECK(blocks == 1, "el bloque del kernel sigue en pie tras matar a la tarea 5");
+    (void)mine;
+    kfree(kernel);
+}
+
 int main(void) {
     test_init();
     test_alloc_basic();
@@ -388,6 +405,7 @@ int main(void) {
     test_ownership_and_peak();
     test_chunked_walk();
     test_free_owned();
+    test_owner_override();
 
     printf("\n%d asserts, %d fallos -> %s\n", g_total, g_failed, g_failed ? "FALLO" : "OK");
     return g_failed ? 1 : 0;

@@ -23,10 +23,22 @@ static uint32_t g_host_clock;
 static task_fd_t *cur_fds(void) { return g_host_fds; }
 static uint32_t vfs_now(void) { return ++g_host_clock; }
 
+/* En el PC no hay interrupciones ni tareas: la ventana atomica no hace nada. */
+static uint32_t atomic_begin(void) { return 0; }
+static void atomic_end(uint32_t ps) { (void)ps; }
+
 #else
 
 #include "../core/sched.h"
 #include "../core/time.h"
+#include "../arch/xtensa/cpu.h"
+
+/* Ventana atomica (interrupciones apagadas, MUY corta): hace indivisible "buscar el nodo y
+ * comprobar/tomar su referencia" o "buscarlo, comprobar que esta libre y desenlazarlo". Sin
+ * esto, una tarea apropiada entre la busqueda y el hold dejaria que otra borrara el nodo y
+ * el hold escribiria en memoria liberada. La liberacion de memoria ocurre FUERA de la ventana. */
+static uint32_t atomic_begin(void) { return irq_save(); }
+static void atomic_end(uint32_t ps) { irq_restore(ps); }
 
 static task_fd_t g_boot_fds[TASK_MAX_FDS];
 
@@ -100,7 +112,7 @@ const char *vfs_strerror(int code) {
 /* ---- nodos ---- */
 
 static vnode_t *new_node(const char *name, vnode_type_t type) {
-    vnode_t *n = (vnode_t *)kmalloc((uint32_t)sizeof(vnode_t));
+    vnode_t *n = (vnode_t *)kmalloc_owner((uint32_t)sizeof(vnode_t), 0);   /* del kernel: kill no lo libera */
     if (n == NULL) {
         return NULL;
     }
@@ -431,59 +443,66 @@ vnode_t *vfs_readdir(const vnode_t *dir, uint32_t index) {
 
 int vfs_rmdir(const char *path, vnode_t *cwd) {
     vnode_t *n = NULL;
+    uint32_t ps = atomic_begin();
     int rc = walk(path, cwd, &n);
-    if (rc != VFS_OK) {
-        return rc;
+    if (rc == VFS_OK) {
+        if (n->parent == NULL) {
+            rc = VFS_EBUSY;                       /* la raiz no se borra */
+        } else if (n->type != VN_DIR) {
+            rc = VFS_ENOTDIR;
+        } else if (n->first_child != NULL) {
+            rc = VFS_ENOTEMPTY;
+        } else if (n->refs > 0u) {
+            rc = VFS_EBUSY;
+        } else {
+            unlink_child(n);
+        }
     }
-    if (n->parent == NULL) {
-        return VFS_EBUSY;                         /* la raiz no se borra */
+    atomic_end(ps);
+    if (rc == VFS_OK) {
+        free_node_memory(n);
     }
-    if (n->type != VN_DIR) {
-        return VFS_ENOTDIR;
-    }
-    if (n->first_child != NULL) {
-        return VFS_ENOTEMPTY;
-    }
-    if (n->refs > 0u) {
-        return VFS_EBUSY;
-    }
-    unlink_child(n);
-    free_node_memory(n);
-    return VFS_OK;
+    return rc;
 }
 
 int vfs_unlink(const char *path, vnode_t *cwd) {
     vnode_t *n = NULL;
+    uint32_t ps = atomic_begin();
     int rc = walk(path, cwd, &n);
-    if (rc != VFS_OK) {
-        return rc;
+    if (rc == VFS_OK) {
+        if (n->type == VN_DIR) {
+            rc = VFS_EISDIR;
+        } else if (n->refs > 0u) {
+            rc = VFS_EBUSY;
+        } else {
+            unlink_child(n);
+        }
     }
-    if (n->type == VN_DIR) {
-        return VFS_EISDIR;
+    atomic_end(ps);
+    if (rc == VFS_OK) {
+        free_node_memory(n);
     }
-    if (n->refs > 0u) {
-        return VFS_EBUSY;
-    }
-    unlink_child(n);
-    free_node_memory(n);
-    return VFS_OK;
+    return rc;
 }
 
 int vfs_rm_recursive(const char *path, vnode_t *cwd) {
     vnode_t *n = NULL;
+    uint32_t ps = atomic_begin();
     int rc = walk(path, cwd, &n);
-    if (rc != VFS_OK) {
-        return rc;
+    if (rc == VFS_OK) {
+        if (n->parent == NULL) {
+            rc = VFS_EBUSY;
+        } else if (subtree_busy(n)) {
+            rc = VFS_EBUSY;                       /* algo adentro esta abierto o es un cwd */
+        } else {
+            unlink_child(n);
+        }
     }
-    if (n->parent == NULL) {
-        return VFS_EBUSY;
+    atomic_end(ps);
+    if (rc == VFS_OK) {
+        free_subtree(n);                          /* ya desenlazado: nadie mas lo alcanza */
     }
-    if (subtree_busy(n)) {
-        return VFS_EBUSY;                         /* algo adentro esta abierto o es un cwd */
-    }
-    unlink_child(n);
-    free_subtree(n);
-    return VFS_OK;
+    return rc;
 }
 
 /* ---- contenido de archivos (HU-E05-04) ---- */
@@ -499,10 +518,10 @@ static int ensure_capacity(vnode_t *f, uint32_t need) {
     if (newcap < need) {
         newcap = need;
     }
-    uint8_t *nd = (uint8_t *)kmalloc(newcap);
+    uint8_t *nd = (uint8_t *)kmalloc_owner(newcap, 0);
     if (nd == NULL && newcap > need) {
         newcap = need;                            /* sin holgura: al menos lo justo */
-        nd = (uint8_t *)kmalloc(newcap);
+        nd = (uint8_t *)kmalloc_owner(newcap, 0);
     }
     if (nd == NULL) {
         return VFS_ENOMEM;
@@ -596,7 +615,7 @@ static int fd_valid(const task_fd_t *fds, int fd) {
     return fd >= 0 && fd < (int)TASK_MAX_FDS && fds[fd].used;
 }
 
-int vfs_open(const char *path, uint32_t flags, vnode_t *cwd) {
+static int open_locked(const char *path, uint32_t flags, vnode_t *cwd) {
     task_fd_t *fds = cur_fds();
     int slot = -1;
     for (int i = 0; i < (int)TASK_MAX_FDS; i++) {
@@ -633,9 +652,17 @@ int vfs_open(const char *path, uint32_t flags, vnode_t *cwd) {
     fds[slot].node = n;
     fds[slot].offset = 0;
     fds[slot].flags = (uint8_t)(flags & 0xFFu);
-    fds[slot].used = 1;
-    vfs_hold(n);
+    vfs_hold(n);                                  /* primero la referencia... */
+    fds[slot].used = 1;                           /* ...y solo despues el descriptor existe */
     return slot;
+}
+
+/* Toda la apertura (buscar, crear, tomar la referencia) es una unica ventana atomica. */
+int vfs_open(const char *path, uint32_t flags, vnode_t *cwd) {
+    uint32_t ps = atomic_begin();
+    int rc = open_locked(path, flags, cwd);
+    atomic_end(ps);
+    return rc;
 }
 
 int vfs_close(int fd) {
@@ -697,7 +724,10 @@ int vfs_seek(int fd, int32_t off, int whence) {
     default:           return VFS_EINVAL;
     }
     /* Sin aritmetica de 64 bits (no hay libgcc): se comprueba el desbordamiento a mano. */
-    if ((off > 0 && base > 0x7FFFFFFF - off) || (off < 0 && base < -off)) {
+    if (off > 0 && base > 0x7FFFFFFF - off) {
+        return VFS_EINVAL;
+    }
+    if (off < 0 && (uint32_t)(-(off + 1)) + 1u > (uint32_t)base) {   /* sin negar INT32_MIN */
         return VFS_EINVAL;
     }
     int32_t pos = base + off;
@@ -734,16 +764,19 @@ int vfs_chdir(const char *path) {
         return VFS_EINVAL;
     }
     vnode_t *n = NULL;
+    uint32_t ps = atomic_begin();
     int rc = walk(path, vfs_cwd(), &n);
-    if (rc != VFS_OK) {
-        return rc;
+    if (rc == VFS_OK && n->type != VN_DIR) {
+        rc = VFS_ENOTDIR;
     }
-    if (n->type != VN_DIR) {
-        return VFS_ENOTDIR;
+    if (rc != VFS_OK) {
+        atomic_end(ps);
+        return rc;
     }
     vfs_hold(n);                                  /* primero el nuevo: nunca queda sin referencia */
     vfs_release((vnode_t *)t->cwd_node);
     t->cwd_node = n;
+    atomic_end(ps);
     sync_cwd_text(t, n);
     return VFS_OK;
 }

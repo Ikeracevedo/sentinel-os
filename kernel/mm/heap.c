@@ -191,13 +191,12 @@ void heap_init(void) {
     g_walk_restarts = 0;
 }
 
-void *kmalloc(uint32_t n) {
+static void *alloc_owned(uint32_t n, uint8_t tid) {
     if (n == 0 || n > HEAP_SIZE) {
         return NULL;   /* kmalloc(0) devuelve NULL (decision documentada) */
     }
     /* n + canario, redondeado a la alineacion */
     uint32_t need = (n + 4u + (HEAP_ALIGN - 1u)) & ~(HEAP_ALIGN - 1u);
-    uint8_t tid = cur_tid();
     void *result = NULL;
 
     uint32_t saved = HEAP_LOCK();
@@ -243,6 +242,16 @@ void *kmalloc(uint32_t n) {
 
     PROBE_ALLOC(result, n, tid);
     return result;
+}
+
+void *kmalloc(uint32_t n) {
+    return alloc_owned(n, cur_tid());
+}
+
+/* El bloque se atribuye a 'owner' en vez de a la tarea que llama. El VFS lo usa con 0
+ * (kernel): su arbol sobrevive a quien lo creo y `kill` no se lo lleva por delante. */
+void *kmalloc_owner(uint32_t n, uint8_t owner) {
+    return alloc_owned(n, owner);
 }
 
 void kfree(void *p) {

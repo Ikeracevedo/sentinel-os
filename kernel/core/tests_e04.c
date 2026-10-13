@@ -454,6 +454,47 @@ static void t_kill(void) {
     mutex_destroy(&g_km);
 }
 
+/* ---- correcciones de la revision de codigo ---- */
+
+static mutex_t g_many[TASK_MAX_OWNED + 1];
+static sem_t g_clamp_sem;
+
+static void late_poster(void *arg) {
+    (void)arg;
+    task_sleep(100);
+    sem_post(&g_clamp_sem);
+}
+
+static void t_review_fixes(void) {
+    int rc = 0;
+    for (uint32_t i = 0; i < TASK_MAX_OWNED + 1u; i++) {
+        mutex_init(&g_many[i], "many");
+    }
+    for (uint32_t i = 0; i < TASK_MAX_OWNED; i++) {
+        rc |= mutex_lock(&g_many[i]);
+    }
+    check("una tarea puede poseer hasta 8 mutex", rc == 0 && sched_current()->owned_count == TASK_MAX_OWNED);
+    check("el noveno se rechaza (-3) en vez de concederse sin registrar", mutex_lock(&g_many[TASK_MAX_OWNED]) == -3 &&
+          g_many[TASK_MAX_OWNED].owner == NULL);
+    check("mutex_destroy de un mutex ocupado devuelve -1", mutex_destroy(&g_many[0]) == -1);
+    for (uint32_t i = 0; i < TASK_MAX_OWNED; i++) {
+        mutex_unlock(&g_many[i]);
+    }
+    check("liberados, mutex_destroy funciona (0)", mutex_destroy(&g_many[0]) == 0);
+    for (uint32_t i = 1; i < TASK_MAX_OWNED + 1u; i++) {
+        mutex_destroy(&g_many[i]);
+    }
+
+    /* Un plazo gigante (>= 2^31 ms) no debe verse como "ya vencido". */
+    sem_init(&g_clamp_sem, 0);
+    task_create("late", late_poster, (void *)0, 2, 0);
+    uint32_t t0 = uptime_ms();
+    int r = sem_wait_timeout(&g_clamp_sem, 0xFFFFFFFFu);
+    uint32_t dt = uptime_ms() - t0;
+    check("sem_wait_timeout con un plazo enorme espera de verdad (no expira al instante)",
+          r == 0 && dt >= 95u && dt <= 200u);
+}
+
 /* ---- HU-E04-06 y costo ---- */
 
 static void t_cost(void) {
@@ -479,6 +520,7 @@ void test_e04(void) {
     t_sem_from_isr();
     t_deadlock();
     t_kill();
+    t_review_fixes();
     t_cost();
     mutex_destroy(&g_mx);
     kprintf("fin de pruebas E04\r\n");

@@ -147,10 +147,17 @@ int32_t task_kill(uint32_t tid) {
         irq_restore(saved_ps);
         return -1;
     }
-    task_free(t);
+    /* La ranura sigue ocupada (TERMINATED, en ninguna cola) mientras se libera el heap: si
+     * se liberara antes, otra tarea podria crear una nueva con este tid y heap_free_owned se
+     * llevaria SUS bloques. */
+    t->state = TASK_TERMINATED;
     irq_restore(saved_ps);
 
     heap_free_owned((uint8_t)tid);
+
+    saved_ps = irq_disable();
+    task_free(t);
+    irq_restore(saved_ps);
     return 0;
 }
 
