@@ -9,6 +9,7 @@
 #include "selftest.h"
 #include <sentinel/vfs.h>
 #include <sentinel/procfs.h>
+#include <sentinel/shell.h>
 #include "../arch/xtensa/cpu.h"
 
 /* 1 = correr el test de desbordamiento de pila (termina en PANIC a proposito). */
@@ -21,6 +22,12 @@
  * SOAK_SECONDS vigilando integridad (E02: cooperativo/apropiativo, 5 min / 30 min / 1 h). */
 /* Velocidad del puerto serie. El monitor del Makefile abre a 115200. */
 #define UART_BAUD       57600u
+
+/* Modo de arranque. Por defecto el sistema arranca en el SHELL. Para correr la bateria de
+ * pruebas en la placa: make EXTRA="-DRUN_SHELL=0" (tools/run_board.sh tests lo hace). */
+#ifndef RUN_SHELL
+#define RUN_SHELL       1
+#endif
 
 #define RUN_SOAK        0
 #define SOAK_SECONDS    300u
@@ -641,8 +648,12 @@ void kmain(void) {
     vfs_populate_demo();
     timer_init(1000);
     sched_init();
-    task_create("ctl", controller_task, (void *)0, 0, 0);
-    kprintf("controlador creado; kmain es ahora la tarea idle\r\n");
+    if (RUN_SHELL) {
+        shell_start();
+    } else {
+        task_create("ctl", controller_task, (void *)0, 0, 0);
+        kprintf("controlador creado; kmain es ahora la tarea idle\r\n");
+    }
 
     for (;;) {
     }

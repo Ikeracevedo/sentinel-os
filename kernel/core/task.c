@@ -34,6 +34,19 @@ static void copy_name(char *dst, const char *src) {
     dst[i] = '\0';
 }
 
+/* Bytes de pila usados como maximo (marca de agua). 0 para idle (usa la pila del linker). */
+uint32_t task_stack_used(const tcb_t *t) {
+    if (t == NULL || t->stack_base == NULL) {
+        return 0;
+    }
+    const uint32_t *w = t->stack_base + 1;
+    const uint32_t *end = t->stack_base + (t->stack_size / 4u);
+    while (w < end && *w == STACK_FILL) {
+        w++;
+    }
+    return t->stack_size - (uint32_t)((const uint8_t *)w - (const uint8_t *)t->stack_base);
+}
+
 tcb_t *task_get(uint32_t tid) {
     if (tid >= MAX_TASKS || g_tasks[tid].state == TASK_UNUSED) {
         return NULL;
@@ -243,6 +256,11 @@ int32_t task_create(const char *name, task_fn_t fn, void *arg,
     *(uint32_t *)base = STACK_CANARY;
 
     ctx_frame_t *f = (ctx_frame_t *)(uintptr_t)(top - CTX_FRAME_SIZE);
+    /* Pila prellenada con un patron: la "marca de agua" (hasta donde llego) se mide
+     * buscando la primera palabra distinta, ver task_stack_used(). */
+    for (uint32_t *w = (uint32_t *)(void *)base + 1; w < (uint32_t *)(void *)f; w++) {
+        *w = STACK_FILL;
+    }
     zero_words(f, CTX_FRAME_SIZE);
     f->epc1 = (uint32_t)(uintptr_t)task_trampoline;
     f->a6   = (uint32_t)(uintptr_t)fn;

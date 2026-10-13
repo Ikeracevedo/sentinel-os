@@ -37,6 +37,17 @@ void uart_init(uint32_t baudrate) {
  * entre el chip y el PC comparando contra los que realmente llegan. */
 static volatile uint32_t g_tx_count;
 
+int uart_rx_ready(void) {
+    return (UART_STATUS_REG & 0xFFu) != 0u;
+}
+
+int uart_rx_byte(void) {
+    if (!uart_rx_ready()) {
+        return -1;
+    }
+    return (int)(UART_FIFO_REG & 0xFFu);
+}
+
 uint32_t uart_tx_count(void) {
     return g_tx_count;
 }

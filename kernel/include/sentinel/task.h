@@ -10,6 +10,7 @@
 #define TASK_MAX_FDS 8
 #define TASK_CWD_LEN 32
 #define STACK_CANARY 0xDEADBEEFu
+#define STACK_FILL   0xA5A5A5A5u
 
 #define TASK_STACK_SIZE          4096u
 #define TASK_PRIORITY_LEVELS     8u
@@ -69,6 +70,7 @@ typedef struct tcb {
 } tcb_t;
 
 tcb_t *task_get(uint32_t tid);
+uint32_t task_stack_used(const tcb_t *t);   /* marca de agua de la pila, en bytes */
 tcb_t *task_alloc(void);
 tcb_t *task_register_boot(const char *name);
 int32_t task_create(const char *name, task_fn_t fn, void *arg,

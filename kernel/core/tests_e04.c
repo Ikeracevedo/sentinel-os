@@ -309,10 +309,10 @@ static void isr_waiter(void *arg) {
 static void t_sem_from_isr(void) {
     sem_init(&g_isr_sem, 0);
     g_hook_ticks = g_isr_got = 0;
-    sched_set_tick_hook(tick_hook_test);
+    sched_add_tick_hook(tick_hook_test);
     task_create("isrw", isr_waiter, (void *)0, 1, 0);
     task_sleep(1300);
-    sched_set_tick_hook((void (*)(void))0);
+    sched_remove_tick_hook(tick_hook_test);
     uint32_t span = g_isr_t1 - g_isr_t0;
     kprintf("sem_post desde ISR: %u despertares en %u ms\r\n", g_isr_got, span);
     check("sem_post desde el tick despierta a la tarea 10 veces, una cada ~100 ms",

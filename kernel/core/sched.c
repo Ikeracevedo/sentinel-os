@@ -199,14 +199,37 @@ static uint32_t switch_task(uint32_t frame_sp) {
 }
 
 static volatile int g_in_isr;
-static void (*g_tick_hook)(void);
+
+#define MAX_TICK_HOOKS 4
+static void (*g_tick_hooks[MAX_TICK_HOOKS])(void);
 
 int sched_in_interrupt(void) {
     return g_in_isr;
 }
 
-void sched_set_tick_hook(void (*fn)(void)) {
-    g_tick_hook = fn;
+int sched_add_tick_hook(void (*fn)(void)) {
+    uint32_t ps = irq_disable();
+    int rc = -1;
+    for (uint32_t i = 0; i < MAX_TICK_HOOKS && rc < 0; i++) {
+        if (g_tick_hooks[i] == fn) {
+            rc = 0;                      /* ya estaba */
+        } else if (g_tick_hooks[i] == NULL) {
+            g_tick_hooks[i] = fn;
+            rc = 0;
+        }
+    }
+    irq_restore(ps);
+    return rc;
+}
+
+void sched_remove_tick_hook(void (*fn)(void)) {
+    uint32_t ps = irq_disable();
+    for (uint32_t i = 0; i < MAX_TICK_HOOKS; i++) {
+        if (g_tick_hooks[i] == fn) {
+            g_tick_hooks[i] = NULL;
+        }
+    }
+    irq_restore(ps);
 }
 
 static uint32_t dispatch_inner(ctx_frame_t *frame) {
@@ -225,8 +248,10 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
             close_idle_window();
         }
         wake_sleepers();
-        if (g_tick_hook != NULL) {
-            g_tick_hook();   /* aun dentro del ISR: puede hacer sem_post */
+        for (uint32_t h = 0; h < MAX_TICK_HOOKS; h++) {
+            if (g_tick_hooks[h] != NULL) {
+                g_tick_hooks[h]();   /* aun dentro del ISR: pueden hacer sem_post */
+            }
         }
         if (g_current->quantum_left > 0) {
             g_current->quantum_left--;
