@@ -6,6 +6,7 @@
 #include "sched.h"
 #include <sentinel/heap.h>
 #include <sentinel/panic.h>
+#include "selftest.h"
 #include "../arch/xtensa/cpu.h"
 
 /* 1 = correr el test de desbordamiento de pila (termina en PANIC a proposito). */
@@ -52,20 +53,6 @@ static void flag_spinner(void *arg) {
 
 static void quick_task(void *arg) {
     (void)arg;
-}
-
-/* Totales para la linea RESUMEN del final: el canal serie pierde bytes a veces,
- * y asi el veredicto cabe en una sola linea corta. */
-static uint32_t g_n_pass;
-static uint32_t g_n_fail;
-
-static void check(const char *name, int ok) {
-    if (ok) {
-        g_n_pass++;
-    } else {
-        g_n_fail++;
-    }
-    kprintf("[%s] %s\r\n", ok ? "PASS" : "FAIL", name);
 }
 
 /* ms = ciclos / 40000, sin division de 64 bits: 2^32 / 40000 ~= 107374. */
@@ -620,6 +607,7 @@ static void controller_task(void *arg) {
     test_hu09();
     test_hu10();
     test_e03();
+    test_e04();
     if (RUN_HEAP_CANARY_TEST) {
         test_e03_corrupt();
     }
@@ -628,7 +616,7 @@ static void controller_task(void *arg) {
     }
 
     kprintf("TXBYTES: %u\r\n", uart_tx_count());
-    kprintf("RESUMEN: %u PASS, %u FAIL\r\n", g_n_pass, g_n_fail);
+    selftest_summary();
     kprintf("=== TODAS LAS PRUEBAS TERMINARON ===\r\n");
 }
 

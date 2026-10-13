@@ -351,6 +351,31 @@ static void test_chunked_walk(void) {
     CHECK(1, "walk: heap_dump con >32 bloques no falla (se ve '+N bloques mas')");
 }
 
+static void test_free_owned(void) {
+    heap_init();
+    heap_stats_t initial = stats();
+
+    heap_host_tid = 4;
+    kmalloc(30);
+    kmalloc(30);
+    heap_host_tid = 5;
+    void *keep = kmalloc(30);
+    heap_host_tid = 4;
+    kmalloc(30);
+    heap_host_tid = 0;
+
+    uint32_t freed = heap_free_owned(4);
+    uint32_t bytes = 0;
+    uint32_t blocks = 0;
+    heap_usage_by_task(4, &bytes, &blocks);
+    CHECK(freed == 3 && blocks == 0, "free_owned: libera los 3 bloques de la tarea 4 y ninguno mas");
+    heap_usage_by_task(5, &bytes, &blocks);
+    CHECK(blocks == 1, "free_owned: el bloque de la tarea 5 sigue ahi");
+    CHECK(heap_free_owned(9) == 0, "free_owned: una tarea sin bloques devuelve 0");
+    kfree(keep);
+    CHECK(same_layout(initial, stats()), "free_owned: todo liberado = estado inicial exacto (coalescencia)");
+}
+
 int main(void) {
     test_init();
     test_alloc_basic();
@@ -362,6 +387,7 @@ int main(void) {
     test_canary();
     test_ownership_and_peak();
     test_chunked_walk();
+    test_free_owned();
 
     printf("\n%d asserts, %d fallos -> %s\n", g_total, g_failed, g_failed ? "FALLO" : "OK");
     return g_failed ? 1 : 0;

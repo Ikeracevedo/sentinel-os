@@ -3,6 +3,7 @@
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
 #include <sentinel/panic.h>
+#include <sentinel/sync.h>
 #include "../arch/xtensa/irq.h"
 #include "../arch/xtensa/cpu.h"
 
@@ -126,9 +127,14 @@ static void wake_sleepers(void) {
     uint32_t now = uptime_ms();
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
-        if (t != NULL && t->state == TASK_SLEEPING &&
-            (int32_t)(now - t->wake_at_tick) >= 0) {
+        if (t == NULL) {
+            continue;
+        }
+        if (t->state == TASK_SLEEPING && (int32_t)(now - t->wake_at_tick) >= 0) {
             sched_make_ready(t);
+        } else if (t->state == TASK_BLOCKED && t->timed_wait &&
+                   (int32_t)(now - t->wake_at_tick) >= 0) {
+            sync_expire_wait(t);   /* plazo vencido: sale de la cola de espera */
         }
     }
 }
@@ -192,7 +198,18 @@ static uint32_t switch_task(uint32_t frame_sp) {
     return next->sp;
 }
 
-uint32_t sched_dispatch(ctx_frame_t *frame) {
+static volatile int g_in_isr;
+static void (*g_tick_hook)(void);
+
+int sched_in_interrupt(void) {
+    return g_in_isr;
+}
+
+void sched_set_tick_hook(void (*fn)(void)) {
+    g_tick_hook = fn;
+}
+
+static uint32_t dispatch_inner(ctx_frame_t *frame) {
     uint32_t frame_sp = (uint32_t)(uintptr_t)frame;
     int is_tick = (frame->cause == EXCCAUSE_LEVEL1_INTERRUPT);
 
@@ -208,6 +225,9 @@ uint32_t sched_dispatch(ctx_frame_t *frame) {
             close_idle_window();
         }
         wake_sleepers();
+        if (g_tick_hook != NULL) {
+            g_tick_hook();   /* aun dentro del ISR: puede hacer sem_post */
+        }
         if (g_current->quantum_left > 0) {
             g_current->quantum_left--;
         }
@@ -222,6 +242,15 @@ uint32_t sched_dispatch(ctx_frame_t *frame) {
         return frame_sp;
     }
     return switch_task(frame_sp);
+}
+
+/* Marca el contexto de interrupcion mientras dura el despacho del tick: ahi sem_post
+ * no debe ceder la CPU (el propio despachador decide el cambio al final). */
+uint32_t sched_dispatch(ctx_frame_t *frame) {
+    g_in_isr = (frame->cause == EXCCAUSE_LEVEL1_INTERRUPT);
+    uint32_t sp = dispatch_inner(frame);
+    g_in_isr = 0;
+    return sp;
 }
 
 void sched_yield(void) {

@@ -38,6 +38,10 @@ uint32_t heap_fragmentation(void);
 
 void heap_usage_by_task(uint8_t tid, uint32_t *bytes, uint32_t *blocks);
 
+/* Libera todos los bloques que reservo la tarea 'tid' (la usa kill). Devuelve cuantos.
+ * O(n) por bloque liberado: es una operacion rara. */
+uint32_t heap_free_owned(uint8_t tid);
+
 /* Imprime detalle (primeros 32 bloques) y un mapa visual. Usa ~520 B de pila. */
 void heap_dump(void);
 

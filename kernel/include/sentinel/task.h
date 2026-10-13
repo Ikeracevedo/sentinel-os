@@ -6,7 +6,8 @@
 
 #define MAX_TASKS 16
 #define TASK_NAME_LEN 16
-#define TASK_MAX_OWNED 4
+#define TASK_MAX_OWNED 8
+#define TASK_MAX_FDS 8
 #define TASK_CWD_LEN 32
 #define STACK_CANARY 0xDEADBEEFu
 
@@ -27,6 +28,14 @@ typedef enum {
 } task_state_t;
 
 
+/* E05: descriptor de archivo por tarea. */
+typedef struct {
+    void    *node;     /* vnode_t* */
+    uint32_t offset;
+    uint8_t  flags;
+    uint8_t  used;
+} task_fd_t;
+
 typedef struct tcb {
     uint32_t     sp;             /* Debe ser el primer campo: lo asume context.S */
     task_state_t state;
@@ -44,10 +53,19 @@ typedef struct tcb {
     uint32_t     ready_since;
     uint32_t     max_ready_wait;
 
-    void        *waiting_on;     
+    /* E04: grafo de espera. arista A -> B  <=>  A.waiting_on == m  y  m.owner == B.
+     * waiting_on se fija ANTES de pasar a BLOCKED y se limpia al despertar o expirar. */
+    void        *waiting_on;     /* mutex_t* o sem_t* que espera (segun waiting_kind), o NULL */
+    uint8_t      waiting_kind;   /* 0 = nada, 1 = mutex, 2 = semaforo */
+    uint8_t      owned_count;
+    uint8_t      timed_wait;     /* BLOCKED con plazo (wake_at_tick) */
+    int8_t       wait_result;    /* 0 = adquirido, -1 = expiro */
+    uint32_t     wait_started;   /* CCOUNT al empezar a esperar (PROBE_LOCK_ACQ) */
     void        *owned[TASK_MAX_OWNED];
 
-    char         cwd[TASK_CWD_LEN];  /* para E05 (VFS) */
+    char         cwd[TASK_CWD_LEN];  /* ruta en texto, solo informativa */
+    void        *cwd_node;           /* E05: vnode_t* del directorio actual */
+    task_fd_t    fds[TASK_MAX_FDS];  /* E05: descriptores de archivo */
 } tcb_t;
 
 tcb_t *task_get(uint32_t tid);
@@ -59,6 +77,7 @@ void task_exit(void) __attribute__((noreturn));
 void task_sleep(uint32_t ms);
 int32_t task_suspend(uint32_t tid);
 int32_t task_resume(uint32_t tid);
+int32_t task_kill(uint32_t tid);   /* termina otra tarea: libera mutex, cola y bloques del heap */
 void task_free(tcb_t *t);   /* libera el TCB y sus recursos; lo llama el scheduler */
 
 #endif

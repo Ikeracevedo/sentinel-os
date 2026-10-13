@@ -30,4 +30,13 @@ static inline void irq_restore(uint32_t saved_ps) {
     __asm__ __volatile__("wsr %0, ps; rsync" :: "r"(saved_ps));
 }
 
+/* Nombres de la HU-E04-01. Anidables: cada salida restaura el PS exacto de su entrada.
+ * Regla: no mas de ~50 us con interrupciones apagadas dentro de una seccion critica. */
+static inline uint32_t irq_save(void) {
+    return irq_disable();
+}
+
+#define CRITICAL_ENTER()  uint32_t _crit_ps = irq_save()
+#define CRITICAL_EXIT()   irq_restore(_crit_ps)
+
 #endif

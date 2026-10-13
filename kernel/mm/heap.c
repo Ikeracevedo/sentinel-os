@@ -421,6 +421,32 @@ void heap_usage_by_task(uint8_t tid, uint32_t *bytes, uint32_t *blocks) {
     }
 }
 
+uint32_t heap_free_owned(uint8_t tid) {
+    uint32_t freed = 0;
+    for (;;) {
+        void *victim = NULL;
+
+        uint32_t saved = HEAP_LOCK();
+        uint32_t off = 0;
+        while (off != HEAP_NIL) {
+            block_t *b = blk_at(off);
+            check_header(b);
+            if (!b->free && b->owner_tid == tid) {
+                victim = payload_of(b);
+                break;
+            }
+            off = b->next;
+        }
+        HEAP_UNLOCK(saved);
+
+        if (victim == NULL) {
+            return freed;
+        }
+        kfree(victim);
+        freed++;
+    }
+}
+
 /* Suma a cada celda del mapa los bytes de [start, end) que caen en ella. */
 static void mark_cells(uint32_t start, uint32_t end, uint16_t *cells) {
     while (start < end) {

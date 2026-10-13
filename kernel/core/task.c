@@ -3,6 +3,8 @@
 #include <sentinel/kprintf.h>
 #include <sentinel/panic.h>
 #include "sched.h"
+#include <sentinel/sync.h>
+#include <sentinel/heap.h>
 #include "time.h"
 #include "../arch/xtensa/cpu.h"
 
@@ -89,11 +91,52 @@ static void report_invalid(const tcb_t *t, task_state_t from, task_state_t to) {
 /* Libera el TCB. El scheduler la llama al dejar una tarea TERMINATED; el
  * resto de la tabla (pila estatica) se recicla porque la ranura queda UNUSED. */
 void task_free(tcb_t *t) {
+    sync_release_all(t);   /* E04: sus mutex pasan (con traspaso) a quien los esperaba */
     for (uint32_t i = 0; i < TASK_MAX_OWNED; i++) {
-        t->owned[i] = NULL;   /* E04: aqui se soltaran los mutex que tenia */
+        t->owned[i] = NULL;
     }
+    t->owned_count = 0;
     t->waiting_on = NULL;
+    t->waiting_kind = 0;
+    t->timed_wait = 0;
     t->state = TASK_UNUSED;
+}
+
+/* Termina a OTRA tarea (comando kill de E06). Segun donde este: la saca de la cola
+ * READY o de la cola de espera de un mutex/semaforo, suelta sus mutex y recupera los
+ * bloques de heap que dejo reservados. */
+int32_t task_kill(uint32_t tid) {
+    if (tid == 0) {
+        return -1;                 /* idle nunca se mata */
+    }
+    tcb_t *t = task_get(tid);
+    if (t == NULL) {
+        return -1;
+    }
+    if (t == sched_current()) {
+        task_exit();
+    }
+
+    uint32_t saved_ps = irq_disable();
+    switch (t->state) {
+    case TASK_READY:
+        sched_remove_ready(t);
+        break;
+    case TASK_BLOCKED:
+        sync_cancel_wait(t);
+        break;
+    case TASK_SLEEPING:
+    case TASK_SUSPENDED:
+        break;
+    default:                       /* TERMINATED: ya la libera el scheduler */
+        irq_restore(saved_ps);
+        return -1;
+    }
+    task_free(t);
+    irq_restore(saved_ps);
+
+    heap_free_owned((uint8_t)tid);
+    return 0;
 }
 
 void task_exit(void) {

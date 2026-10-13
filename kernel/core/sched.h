@@ -20,6 +20,12 @@ uint32_t sched_stats_avg_cycles(void);
 void sched_make_ready(tcb_t *t);
 void sched_remove_ready(tcb_t *t);
 
+/* 1 mientras se atiende el tick (contexto de interrupcion): ahi no se puede ceder ni bloquear. */
+int sched_in_interrupt(void);
+
+/* Funcion que se invoca en cada tick, dentro del ISR (E04: sem_post desde ISR; E06: leer el UART). */
+void sched_set_tick_hook(void (*fn)(void));
+
 /* Si hay una tarea READY de mayor prioridad que la actual, cede la CPU ya. */
 void sched_preempt_check(void);
 

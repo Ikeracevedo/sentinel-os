@@ -18,4 +18,17 @@
 #define PROBE_FREE(ptr, tid) \
     do { (void)(ptr); (void)(tid); } while (0)
 
+/* E04: sincronizacion. 'waited' y 'held' son ciclos de CCOUNT. */
+#define PROBE_LOCK_TRY(m) \
+    do { (void)(m); } while (0)
+
+#define PROBE_LOCK_ACQ(m, waited) \
+    do { (void)(m); (void)(waited); } while (0)
+
+#define PROBE_LOCK_REL(m, held) \
+    do { (void)(m); (void)(held); } while (0)
+
+#define PROBE_BLOCK(m) \
+    do { (void)(m); } while (0)
+
 #endif
