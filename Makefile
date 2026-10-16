@@ -3,7 +3,11 @@ CC       := $(PREFIX)gcc
 SIZE     := $(PREFIX)size
 ESPTOOL  := esptool.py
 
+TRACE    ?= 1
 BUILD    := build
+ifeq ($(TRACE),0)
+BUILD    := build/trace-off
+endif
 TARGET   := $(BUILD)/kernel
 
 PORT     := $(or $(lastword $(sort $(wildcard /dev/ttyUSB*))),/dev/ttyUSB0)
@@ -14,12 +18,46 @@ EXTRA    :=
 
 CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
             -ffreestanding -fno-builtin -nostdlib -mlongcalls \
-            -Ikernel/include $(EXTRA)
+            -Ikernel/include -DSENTINEL_TRACE=$(TRACE) $(EXTRA)
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/mm/heap.c
+SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/mm/heap.c
 SRCS_S   := kernel/arch/xtensa/start.S kernel/arch/xtensa/vectors.S
+
+# En TRACE=0 no se enlazan ni las funciones ni los 32 KB del ring buffer.
+ifeq ($(TRACE),0)
+SRCS_C   := $(filter-out kernel/core/trace.c kernel/shell/trace_cmd.c,$(SRCS_C))
+endif
+
+# La prueba del ring buffer se incluye solo cuando se pide expresamente.
+TRACE_BOARD_TEST ?= 0
+ifeq ($(TRACE_BOARD_TEST),1)
+SRCS_C += tests/test_trace_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
+# La prueba de sondas del planificador se construye por separado.
+TRACE_SCHED_BOARD_TEST ?= 0
+ifeq ($(TRACE_SCHED_BOARD_TEST),1)
+SRCS_C += tests/test_trace_sched_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
+# La misma carga de heap y mutex mide el coste de TRACE=0 frente a TRACE=1.
+TRACE_COST_BOARD_TEST ?= 0
+ifeq ($(TRACE_COST_BOARD_TEST),1)
+SRCS_C += tests/test_trace_cost_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
+# Prueba de latidos del timer, incluso mientras solo corre idle.
+TRACE_HEARTBEAT_BOARD_TEST ?= 0
+ifeq ($(TRACE_HEARTBEAT_BOARD_TEST),1)
+SRCS_C += tests/test_trace_heartbeat_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 
 .PHONY: all clean flash monitor size test
@@ -55,13 +93,17 @@ monitor:
 HOSTCC     := gcc
 HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
 
-# Tests en el PC: heap.c y vfs.c son C puro y se compilan sin cambios (-DHEAP_HOST / -DVFS_HOST).
+# Pruebas en WSL: heap, VFS y ring buffer de traza.
 test:
 	@mkdir -p $(BUILD)
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST tests/test_heap.c kernel/mm/heap.c -o $(BUILD)/test_heap
 	./$(BUILD)/test_heap
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST -DVFS_HOST tests/test_vfs.c kernel/fs/vfs.c kernel/mm/heap.c -o $(BUILD)/test_vfs
 	./$(BUILD)/test_vfs
+	$(HOSTCC) $(HOSTFLAGS) -O2 -Werror -DTRACE_HOST tests/test_trace.c kernel/core/trace.c -o $(BUILD)/test_trace
+	./$(BUILD)/test_trace
+	$(HOSTCC) $(HOSTFLAGS) -O2 -Werror -DTRACE_HOST tests/test_trace_filter.c kernel/core/trace.c -o $(BUILD)/test_trace_filter
+	./$(BUILD)/test_trace_filter
 
 clean:
 	rm -rf $(BUILD)

@@ -150,8 +150,13 @@ def main_battery(sh):
     sh.run('mkdir /tmp/r')
     sh.run('mkdir /tmp/r/a')
     sh.run('write /tmp/r/a/f x')
-    sh.run('rm -r /tmp/r')
-    check('rm -r borra el arbol y deja el heap intacto', usado(sh) == base and 'no existe' in sh.run('ls /tmp/r'))
+    rm_tree_out = sh.run('rm -r /tmp/r')
+    tree_used = usado(sh)
+    tree_listing = sh.run('ls /tmp/r')
+    check('rm -r borra el arbol y deja el heap intacto',
+          tree_used == base and 'no existe' in tree_listing,
+          'base=%s despues=%s rm=%r ls=%r' %
+          (base, tree_used, rm_tree_out, tree_listing))
     check('rm inexistente: error claro', 'rm: no existe: nada' in sh.run('rm nada'))
 
     # ---- ps / free / run / kill ----

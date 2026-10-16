@@ -193,6 +193,9 @@ void heap_init(void) {
 
 static void *alloc_owned(uint32_t n, uint8_t tid) {
     if (n == 0 || n > HEAP_SIZE) {
+#ifndef HEAP_HOST
+        PROBE_ALLOC(NULL, n, cur_tid());
+#endif
         return NULL;   /* kmalloc(0) devuelve NULL (decision documentada) */
     }
     /* n + canario, redondeado a la alineacion */
@@ -240,7 +243,9 @@ static void *alloc_owned(uint32_t n, uint8_t tid) {
     }
     HEAP_UNLOCK(saved);
 
-    PROBE_ALLOC(result, n, tid);
+#ifndef HEAP_HOST
+    PROBE_ALLOC(result, n, cur_tid());
+#endif
     return result;
 }
 
@@ -279,7 +284,9 @@ void kfree(void *p) {
     check_header(b);
     check_canary(b);
 
-    uint8_t owner = b->owner_tid;
+#if !defined(HEAP_HOST) && SENTINEL_TRACE
+    uint32_t freed_size = b->size;
+#endif
     b->free = 1;
     b->owner_tid = 0;
     g_free_bytes += b->size;
@@ -317,7 +324,9 @@ void kfree(void *p) {
     }
     HEAP_UNLOCK(saved);
 
-    PROBE_FREE(p, owner);
+#ifndef HEAP_HOST
+    PROBE_FREE_SIZED(p, freed_size, cur_tid());
+#endif
 }
 
 typedef void (*walk_visit_fn)(block_t *b, uint32_t off, void *ctx);
