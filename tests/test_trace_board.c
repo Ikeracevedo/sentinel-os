@@ -44,6 +44,31 @@ static uint32_t measure_guard(void) {
                : 0u;
 }
 
+/* Mide solo la decision del filtro, sin escribir ningun evento. */
+static uint32_t measure_filter(int enabled) {
+    uint32_t total = 0u;
+    uint32_t baseline = 0u;
+    trace_set_enabled(1);
+    (void)trace_set_filter(EV_ALLOC, enabled);
+
+    for (uint32_t i = 0; i < BENCH_SAMPLES; i++) {
+        uint32_t saved_ps = irq_disable();
+        uint32_t start = cpu_cycles();
+        __asm__ __volatile__("" ::: "memory");
+        baseline += cpu_cycles() - start;
+        irq_restore(saved_ps);
+
+        saved_ps = irq_disable();
+        start = cpu_cycles();
+        int allowed = trace_filter_allows(EV_ALLOC);
+        __asm__ __volatile__("" : : "r"(allowed) : "memory");
+        total += cpu_cycles() - start;
+        irq_restore(saved_ps);
+    }
+
+    return (total > baseline) ? (total - baseline) / BENCH_SAMPLES : 0u;
+}
+
 static void trace_tick_probe(void) {
     trace_emit(EV_INJECT, 0u, timer_get_ticks(), ISR_MARKER);
     g_isr_attempts++;
@@ -156,6 +181,9 @@ static void trace_board_task(void *arg) {
     (void)arg;
 
     uint32_t guard_cycles = measure_guard();
+    uint32_t filter_on = measure_filter(1);
+    uint32_t filter_off = measure_filter(0);
+    (void)trace_set_filter(EV_ALLOC, 1);
     uint32_t cycles = 0u;
     uint32_t isr_events = 0u;
     uint32_t task_events = 0u;
@@ -163,6 +191,10 @@ static void trace_board_task(void *arg) {
     int bench_ok = measure_emit(&cycles);
     int concurrent_ok = test_task_and_isr(&isr_events, &task_events);
 
+    kprintf("TRACE_FILTER: on=%u ciclos, off=%u ciclos\r\n",
+            filter_on, filter_off);
+    kprintf("TRACE_FILTER_DONE %s\r\n",
+            (filter_on < 5u && filter_off < 5u) ? "PASS" : "FAIL");
     kprintf("TRACE_BOARD: guard=%u ciclos, emit=%u ciclos, ISR=%u, tarea=%u, perdidos=%u\r\n",
             guard_cycles, cycles, isr_events, task_events, trace_dropped());
     kprintf("TRACE_BOARD_DONE %s\r\n",

@@ -67,14 +67,23 @@ void trace_emit(uint8_t type, uint8_t tid, uint32_t arg0, uint32_t arg1) {
 /* La ruta directa trace_emit queda reservada para eventos incondicionales
  * como EV_HEARTBEAT y para las pruebas del ring buffer. */
 extern volatile uint8_t trace_enabled;
-extern volatile uint8_t trace_type_enabled[256];
+extern volatile uint8_t trace_active_types[256];
 extern volatile uint32_t trace_sample_rate;
 
 /* Esta comprobacion es la ruta rapida del filtro. Los tipos son constantes
  * en las sondas, por lo que el compilador resuelve el indice de la tabla. */
 static inline __attribute__((always_inline))
 int trace_filter_allows(uint8_t type) {
-    return trace_enabled && trace_type_enabled[type];
+    uint32_t enabled;
+#ifndef TRACE_HOST
+    const volatile uint8_t *slot = &trace_active_types[type];
+    /* Una lectura de byte basta; el filtro no publica datos del buffer. */
+    __asm__ __volatile__("l8ui %0, %1, 0"
+                         : "=r"(enabled) : "r"(slot) : "memory");
+#else
+    enabled = trace_active_types[type];
+#endif
+    return enabled;
 }
 
 int trace_sample_allows(void);

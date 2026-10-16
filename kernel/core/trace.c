@@ -25,31 +25,28 @@ _Static_assert((TRACE_BUFFER_CAPACITY & TRACE_BUFFER_MASK) == 0u,
                "La capacidad del buffer debe ser potencia de 2");
 
 /*
- * Cada fila contiene un evento de 16 bytes:
- * cycles, metadatos (type, tid, seq), arg0 y arg1.
- * La .bss reside en SRAM interna.
- */
-static uint32_t g_buffer[TRACE_BUFFER_CAPACITY][4]
-    __attribute__((aligned(4)));
-
-_Static_assert(sizeof(g_buffer) == 32768u,
-               "El buffer de eventos debe ocupar 32 KB");
-
-/*
  * head tiene un solo escritor: el productor, sea tarea o ISR en core 0.
  * tail tiene un solo escritor: el consumidor.
  * full_head es el valor de head que exige volver a consultar tail.
+ * buffer contiene 2048 filas de 16 bytes en la misma base que los indices.
  */
 typedef struct {
     volatile uint32_t head;
     uint32_t full_head;
     volatile uint32_t tail;
     volatile uint32_t dropped;
+    uint32_t buffer[TRACE_BUFFER_CAPACITY][4];
 } trace_state_t;
+
+_Static_assert(sizeof(((trace_state_t *)0)->buffer) == 32768u,
+               "El buffer de eventos debe ocupar 32 KB");
+_Static_assert(offsetof(trace_state_t, buffer) == 16u,
+               "Los indices deben ocupar el prefijo de 16 bytes");
 
 static trace_state_t g_state;
 volatile uint8_t trace_enabled;
-volatile uint8_t trace_type_enabled[256];
+volatile uint8_t trace_active_types[256];
+static uint8_t g_configured_types[256];
 volatile uint32_t trace_sample_rate;
 static uint32_t g_sample_counter;
 
@@ -63,7 +60,8 @@ void trace_init(void) {
     trace_sample_rate = 1u;
     g_sample_counter = 0u;
     for (uint32_t i = 0; i < 256u; i++) {
-        trace_type_enabled[i] = 1u;
+        g_configured_types[i] = 1u;
+        trace_active_types[i] = 1u;
     }
 #ifdef TRACE_HOST
     g_host_cycles = 0;
@@ -72,18 +70,24 @@ void trace_init(void) {
 
 void trace_set_enabled(int enabled) {
     trace_enabled = enabled ? 1u : 0u;
+    /* Configuracion infrecuente: al volver el comando todos los tipos
+     * tienen el nuevo estado. Una ISR puede ver la transicion parcial. */
+    for (uint32_t i = 0; i < 256u; i++) {
+        trace_active_types[i] = enabled ? g_configured_types[i] : 0u;
+    }
 }
 
 int trace_set_filter(uint8_t type, int enabled) {
     if (type == EV_HEARTBEAT && !enabled) {
         return -1; /* ADR-008: el latido nunca puede silenciarse. */
     }
-    trace_type_enabled[type] = enabled ? 1u : 0u;
+    g_configured_types[type] = enabled ? 1u : 0u;
+    trace_active_types[type] = (trace_enabled && enabled) ? 1u : 0u;
     return 0;
 }
 
 int trace_get_filter(uint8_t type) {
-    return trace_type_enabled[type] != 0u;
+    return g_configured_types[type] != 0u;
 }
 
 int trace_set_sample_rate(uint32_t rate) {
@@ -107,6 +111,23 @@ int trace_sample_allows(void) {
     g_sample_counter = next;
     irq_restore(saved_ps);
     return next == 0u;
+}
+
+/* Camino excepcional separado: el productor normal no debe saltar sobre el
+ * codigo de buffer lleno en cada evento. Se llama con IRQ deshabilitadas. */
+static __attribute__((noinline, cold))
+int trace_refresh_full(trace_state_t *state, uint32_t head) {
+    uint32_t tail = state->tail;
+    __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+    uint32_t full_head = tail + TRACE_BUFFER_CAPACITY;
+    state->full_head = full_head;
+
+    if (head == full_head) {
+        state->dropped++;
+        return 1;
+    }
+    return 0;
 }
 
 void trace_emit_packed(uint32_t type_tid, uint32_t arg0, uint32_t arg1) {
@@ -133,31 +154,37 @@ void trace_emit_packed(uint32_t type_tid, uint32_t arg0, uint32_t arg1) {
     head = state->head;
 #endif
 
-    /*
-     * El buffer lleno es excepcional. Normalmente seguimos directamente
-     * a escribir; al llegar al limite consultamos el tail publicado.
-     */
-    if (__builtin_expect(head == state->full_head, 0)) {
-        uint32_t tail = state->tail;
-        __atomic_thread_fence(__ATOMIC_ACQUIRE);
-
-        uint32_t full_head = tail + TRACE_BUFFER_CAPACITY;
-        state->full_head = full_head;
-
-        if (head == full_head) {
-            state->dropped++;
-            __atomic_signal_fence(__ATOMIC_SEQ_CST);
-            irq_restore(saved_ps);
-            return;
-        }
+    /* La rama excepcional queda despues del retorno normal. La instruccion
+     * beq no se toma mientras el buffer tiene espacio disponible. */
+    uint32_t full_head = state->full_head;
+#ifndef TRACE_HOST
+    __asm__ goto("beq %0, %1, %l[check_full]"
+                 : : "r"(head), "r"(full_head) : : check_full);
+#else
+    if (head == full_head) {
+        goto check_full;
     }
+#endif
 
-    uint32_t *slot = g_buffer[head & TRACE_BUFFER_MASK];
+write_slot:
+    /* Dos instrucciones calculan (head modulo 2048) * 16. GCC transforma
+     * la expresion C equivalente en tres desplazamientos en Xtensa. */
+    uint32_t offset;
+#ifndef TRACE_HOST
+    __asm__ __volatile__("extui %0, %1, 0, 11\n\t"
+                         "slli %0, %0, 4"
+                         : "=&r"(offset) : "r"(head));
+#else
+    offset = (head & TRACE_BUFFER_MASK) << 4;
+#endif
+    /* Los 16 bytes iniciales de state son los indices y contadores. */
+    uint32_t *slot = (uint32_t *)((uint8_t *)state + offset);
 
-    slot[0] = cpu_cycles();
-    slot[1] = type_tid | ((head & 0xffffu) << 16);
-    slot[2] = arg0;
-    slot[3] = arg1;
+    slot[4] = cpu_cycles();
+    /* El desplazamiento descarta por si solo los bits altos de head. */
+    slot[5] = type_tid | (head << 16);
+    slot[6] = arg0;
+    slot[7] = arg1;
 
     uint32_t next = head + 1u;
 
@@ -182,6 +209,23 @@ void trace_emit_packed(uint32_t type_tid, uint32_t arg0, uint32_t arg1) {
 
     __atomic_signal_fence(__ATOMIC_SEQ_CST);
     irq_restore(saved_ps);
+#ifndef TRACE_HOST
+    /* Xtensa usa ABI de ventanas: retw.n cierra esta llamada directamente.
+     * Evita el salto que GCC inserta para compartir el retorno con la rama
+     * excepcional; no altera la barrera ni el estado de interrupciones. */
+    __asm__ __volatile__("retw.n" ::: "memory");
+    __builtin_unreachable();
+#else
+    return;
+#endif
+
+check_full:
+    if (trace_refresh_full(state, head)) {
+        __atomic_signal_fence(__ATOMIC_SEQ_CST);
+        irq_restore(saved_ps);
+        return;
+    }
+    goto write_slot;
 }
 
 int trace_pop(trace_event_t *out) {
@@ -199,7 +243,7 @@ int trace_pop(trace_event_t *out) {
     /* Leer el evento solo despues de observar el head publicado. */
     __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
-    const uint32_t *slot = g_buffer[tail & TRACE_BUFFER_MASK];
+    const uint32_t *slot = g_state.buffer[tail & TRACE_BUFFER_MASK];
     uint32_t metadata = slot[1];
 
     out->cycles = slot[0];

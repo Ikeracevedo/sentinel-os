@@ -17,7 +17,7 @@ FLASH_ADDR := 0x1000
 EXTRA    :=
 
 CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
-            -ffreestanding -fno-builtin -nostdlib -mlongcalls \
+            -ffreestanding -fno-builtin -nostdlib -mno-longcalls \
             -Ikernel/include -DSENTINEL_TRACE=$(TRACE) $(EXTRA)
 
 LDFLAGS  := -T linker.ld -nostdlib

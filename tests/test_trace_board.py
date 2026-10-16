@@ -31,7 +31,7 @@ def main() -> int:
 
     output = data.decode(errors="replace")
     lines = [line.strip() for line in output.splitlines()
-             if "TRACE_BOARD" in line]
+             if "TRACE_BOARD" in line or "TRACE_FILTER" in line]
 
     for line in lines:
         print(line)
