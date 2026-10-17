@@ -58,6 +58,14 @@ SRCS_C += tests/test_trace_heartbeat_board.c
 LDFLAGS += -Wl,--wrap=shell_start
 endif
 
+# Cinco tareas durante 60 s por corrida, para comparar TRACE=0 y TRACE=1.
+TRACE_OVERHEAD_BOARD_TEST ?= 0
+ifeq ($(TRACE_OVERHEAD_BOARD_TEST),1)
+SRCS_C += tests/test_trace_overhead_board.c
+CFLAGS += -DTRACE_OVERHEAD_BENCH=1
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 
 .PHONY: all clean flash monitor size test

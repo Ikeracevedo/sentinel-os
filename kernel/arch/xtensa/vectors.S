@@ -101,6 +101,16 @@ _vector_table:
         .org 0x300
         j .                 /* Excepcion de kernel -- no usada (siempre en modo usuario) */
 
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+        /* Literales detras de un vector no utilizado: l32r solo alcanza
+         * direcciones anteriores a la instruccion Xtensa. */
+        .org 0x310
+.Ltrace_armed_ptr:  .word trace_switch_armed
+.Ltrace_ready_ptr:  .word trace_switch_ready
+.Ltrace_start_ptr:  .word trace_switch_start
+.Ltrace_cycles_ptr: .word trace_switch_cycles
+#endif
+
         .org 0x340
         .global _UserExceptionVector
     _UserExceptionVector:
@@ -123,6 +133,12 @@ _vector_table:
  * Aqui EXCM=1 y el a0 original esta en EXCSAVE_1. */
 .Lcontext_entry:
     addi    a1, a1, -112
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    /* a0 original esta en EXCSAVE_1; el campo pad del marco guarda el
+     * CCOUNT anterior al volcado de los registros de esta excepcion. */
+    rsr     a0, ccount
+    s32i    a0, a1, 92
+#endif
     s32i    a2,  a1, 8
     s32i    a3,  a1, 12
     s32i    a4,  a1, 16
@@ -194,6 +210,17 @@ _vector_table:
      * Con call4, el argumento viaja en a6 y el resultado vuelve en a6. */
     mov     a6, a1
     call4   sched_dispatch
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    /* a1 todavia apunta al marco saliente; a6 trae el marco elegido.
+     * Solo cuando switch_task preparo un par guardamos el inicio. */
+    l32r    a2, .Ltrace_armed_ptr
+    l32i    a3, a2, 0
+    beqz    a3, .Ltrace_no_start
+    l32i    a3, a1, 92
+    l32r    a2, .Ltrace_start_ptr
+    s32i    a3, a2, 0
+.Ltrace_no_start:
+#endif
     mov     a1, a6
 
     l32i    a2,  a1, 64            /* PS original: restaura EXCM=1 e INTLEVEL */
@@ -211,7 +238,6 @@ _vector_table:
     wsr     a2, lend
     l32i    a2,  a1, 4
     wsr     a2, EXCSAVE_1
-    l32i    a2,  a1, 8
     l32i    a3,  a1, 12
     l32i    a4,  a1, 16
     l32i    a5,  a1, 20
@@ -225,6 +251,24 @@ _vector_table:
     l32i    a13, a1, 52
     l32i    a14, a1, 56
     l32i    a15, a1, 60
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    /* El registro a0 original sigue a salvo en EXCSAVE_1. Se toma el
+     * CCOUNT despues de restaurar a3-a15 y antes de los ultimos a2/a0/rfe. */
+    l32r    a2, .Ltrace_armed_ptr
+    l32i    a0, a2, 0
+    beqz    a0, .Ltrace_no_end
+    l32r    a2, .Ltrace_start_ptr
+    l32i    a0, a2, 0
+    rsr     a2, ccount
+    sub     a0, a2, a0
+    l32r    a2, .Ltrace_cycles_ptr
+    s32i    a0, a2, 0
+    l32r    a2, .Ltrace_ready_ptr
+    movi    a0, 1
+    s32i    a0, a2, 0
+.Ltrace_no_end:
+#endif
+    l32i    a2,  a1, 8
     addi    a1, a1, 112
     rsr     a0, EXCSAVE_1
     rfe

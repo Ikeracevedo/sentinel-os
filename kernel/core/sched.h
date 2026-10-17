@@ -16,6 +16,23 @@ uint32_t cpu_idle_percent(void);
 /* Costo promedio (ciclos) de mantener las estadisticas en cada cambio de tarea. */
 uint32_t sched_stats_avg_cycles(void);
 
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+/* Estadisticas acumuladas del tramo C del cambio de tarea. La prueba de
+ * overhead compila exactamente esta medicion en TRACE=0 y TRACE=1. */
+typedef struct {
+    uint32_t count;
+    uint32_t sum_cycles;
+    uint32_t max_cycles;
+    uint64_t sum_squares;
+    uint32_t full_count;
+    uint32_t full_sum_cycles;
+    uint32_t full_max_cycles;
+    uint64_t full_sum_squares;
+} sched_bench_stats_t;
+void sched_bench_snapshot(sched_bench_stats_t *out);
+void sched_bench_reset(void);
+#endif
+
 /* Colas READY. Llamar con las interrupciones apagadas (o desde el despachador). */
 void sched_make_ready(tcb_t *t);
 void sched_remove_ready(tcb_t *t);

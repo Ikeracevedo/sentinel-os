@@ -21,10 +21,15 @@ typedef struct {
     uint32_t reasons[TRACE_SWITCH_EXIT + 1u];
     uint32_t tids_seen;
     uint32_t errors;
+    uint32_t cycles_min;
+    uint32_t cycles_max;
+    uint32_t cycles_sum;
     uint16_t last_seq;
     uint8_t next_tid;
     uint8_t have_seq;
     uint8_t pending_out;
+    uint8_t saw_out;
+    uint8_t orphan_start;
 } sched_check_t;
 
 static void worker_task(void *arg) {
@@ -65,11 +70,19 @@ static void check_event(sched_check_t *check, const trace_event_t *event) {
             return;
         }
         check->pending_out = 1u;
+        check->saw_out = 1u;
         check->next_tid = (uint8_t)event->arg0;
         check->tids_seen |= 1u << event->tid;
         check->tids_seen |= 1u << event->arg0;
         check->reasons[event->arg1]++;
     } else if (event->type == EV_SWITCH_IN) {
+        /* El vaciado inicial puede cortar una pareja: OUT ya se consumio
+         * antes de empezar la prueba e IN llega en la excepcion siguiente. */
+        if (check->saw_out == 0u && check->pending_out == 0u &&
+            check->orphan_start == 0u) {
+            check->orphan_start = 1u;
+            return;
+        }
         if (check->pending_out == 0u || event->tid != check->next_tid ||
             event->arg0 == 0u) {
             check->errors++;
@@ -77,6 +90,13 @@ static void check_event(sched_check_t *check, const trace_event_t *event) {
         }
         check->pending_out = 0u;
         check->pairs++;
+        if (check->pairs == 1u || event->arg0 < check->cycles_min) {
+            check->cycles_min = event->arg0;
+        }
+        if (event->arg0 > check->cycles_max) {
+            check->cycles_max = event->arg0;
+        }
+        check->cycles_sum += event->arg0;
     }
 }
 
@@ -133,13 +153,18 @@ static void trace_sched_board_task(void *arg) {
     }
 
     uint32_t dropped = trace_dropped();
-    kprintf("TRACE_SCHED_BOARD: pares=%u tareas=%u workers=%u quantum=%u block=%u yield=%u preempt=%u exit=%u perdidos=%u errores=%u\r\n",
+    kprintf("TRACE_SCHED_BOARD: pares=%u tareas=%u workers=%u quantum=%u block=%u yield=%u preempt=%u exit=%u perdidos=%u errores=%u inicio_parcial=%u fin_parcial=%u\r\n",
             check.pairs, count_tids(check.tids_seen), workers_ran,
             check.reasons[TRACE_SWITCH_QUANTUM],
             check.reasons[TRACE_SWITCH_BLOCK],
             check.reasons[TRACE_SWITCH_YIELD],
             check.reasons[TRACE_SWITCH_PREEMPT],
-            check.reasons[TRACE_SWITCH_EXIT], dropped, check.errors);
+            check.reasons[TRACE_SWITCH_EXIT], dropped, check.errors,
+            check.orphan_start, check.pending_out);
+    kprintf("TRACE_SCHED_CYCLES: minimo=%u media=%u maximo=%u\r\n",
+            check.cycles_min,
+            check.pairs != 0u ? check.cycles_sum / check.pairs : 0u,
+            check.cycles_max);
 
     int passed = created && workers_ran == WORKERS &&
                  check.pairs >= 20u && count_tids(check.tids_seen) >= 5u &&
@@ -147,8 +172,7 @@ static void trace_sched_board_task(void *arg) {
                  check.reasons[TRACE_SWITCH_BLOCK] > 0u &&
                  check.reasons[TRACE_SWITCH_YIELD] > 0u &&
                  check.reasons[TRACE_SWITCH_PREEMPT] > 0u &&
-                 check.pending_out == 0u && dropped == 0u &&
-                 check.errors == 0u;
+                 dropped == 0u && check.errors == 0u;
     kprintf("TRACE_SCHED_DONE %s\r\n", passed ? "PASS" : "FAIL");
     trace_heap_lock_case_run();
     trace_heap_stats_case_run();

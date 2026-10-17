@@ -23,8 +23,21 @@ static uint32_t g_win_idle_base;
 static uint32_t g_win_next_ms;
 static uint32_t g_idle_percent;
 
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
 #if SENTINEL_TRACE
 static uint32_t g_next_heartbeat_ms;
+#endif
+/* El vector toma CCOUNT al entrar y cerca del retorno a la tarea.
+ * EV_SWITCH_IN se publica al entrar en la siguiente excepcion, cuando ya
+ * existe la medicion. Estos cuatro simbolos los usa vectors.S. */
+volatile uint32_t trace_switch_armed;
+volatile uint32_t trace_switch_ready;
+volatile uint32_t trace_switch_start;
+volatile uint32_t trace_switch_cycles;
+#if SENTINEL_TRACE
+static volatile uint8_t g_switch_in_tid;
+static volatile uint32_t g_switch_in_wait_ms;
+#endif
 #endif
 
 /* Una cola FIFO circular por nivel de prioridad (0 = maxima, 7 = idle).
@@ -52,12 +65,18 @@ void sched_init(void) {
     g_win_next_ms = uptime_ms() + IDLE_WINDOW_MS;
     g_idle_percent = 0;
 
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
 #if SENTINEL_TRACE
     g_next_heartbeat_ms = uptime_ms() + 100u;
+#endif
+    trace_switch_armed = 0u;
+    trace_switch_ready = 0u;
+#if SENTINEL_TRACE
     /* heap_stats recorre la arena: tomar la muestra desde una tarea, no desde el tick. */
     if (task_create("trace-heap", trace_heap_stats_task, NULL, 0u, 0u) < 0) {
         panic("sched_init: no se pudo crear trace-heap");
     }
+#endif
 #endif
 }
 
@@ -160,6 +179,37 @@ static void wake_sleepers(void) {
 static uint32_t g_stats_cost_total;
 static uint32_t g_stats_cost_count;
 
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+static sched_bench_stats_t g_bench_stats;
+
+static uint64_t bench_square(uint32_t cycles) {
+    /* Evita la multiplicacion de 64 bits: bare metal no enlaza libgcc. */
+    if (cycles <= 65535u) {
+        return (uint64_t)(cycles * cycles);
+    }
+    uint32_t lo = cycles & 0xffffu;
+    uint32_t hi = cycles >> 16;
+    return (uint64_t)(lo * lo) +
+           ((uint64_t)(lo * hi) << 17) +
+           ((uint64_t)(hi * hi) << 32);
+}
+
+void sched_bench_reset(void) {
+    uint32_t saved_ps = irq_disable();
+    g_bench_stats = (sched_bench_stats_t){0};
+    irq_restore(saved_ps);
+}
+
+void sched_bench_snapshot(sched_bench_stats_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    uint32_t saved_ps = irq_disable();
+    *out = g_bench_stats;
+    irq_restore(saved_ps);
+}
+#endif
+
 static void note_switch_in(tcb_t *next) {
     uint32_t t0 = cpu_cycles();
     uint32_t wait = uptime_ms() - next->ready_since;
@@ -191,9 +241,10 @@ static void check_canary(const tcb_t *t) {
  * tarea actual. reason explica por que salio la tarea anterior.
  */
 static uint32_t switch_task(uint32_t frame_sp, uint32_t reason) {
-#if SENTINEL_TRACE
-    uint32_t switch_start = cpu_cycles();
-#else
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+    uint32_t bench_start = cpu_cycles();
+#endif
+#if !SENTINEL_TRACE
     (void)reason;
 #endif
     tcb_t *prev = g_current;
@@ -224,8 +275,21 @@ static uint32_t switch_task(uint32_t frame_sp, uint32_t reason) {
     g_current = next;
 
 #if SENTINEL_TRACE
-    uint32_t switch_cycles = cpu_cycles() - switch_start;
-    PROBE_SWITCH_IN(next, switch_cycles, wait_ms);
+    g_switch_in_tid = next->tid;
+    g_switch_in_wait_ms = wait_ms;
+#endif
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    trace_switch_armed = 1u;
+#endif
+
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+    uint32_t bench_cycles = cpu_cycles() - bench_start;
+    g_bench_stats.count++;
+    g_bench_stats.sum_cycles += bench_cycles;
+    if (bench_cycles > g_bench_stats.max_cycles) {
+        g_bench_stats.max_cycles = bench_cycles;
+    }
+    g_bench_stats.sum_squares += bench_square(bench_cycles);
 #endif
 
     return next->sp;
@@ -334,6 +398,30 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
 /* Marca el contexto de interrupcion mientras dura el despacho del tick:
  * ahi sem_post no debe ceder ni bloquear la CPU. */
 uint32_t sched_dispatch(ctx_frame_t *frame) {
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    /* La interrupcion anterior ya termino de restaurar el contexto. Publicar
+     * su duracion antes de que este despacho pueda emitir otro SWITCH_OUT. */
+    if (trace_switch_ready != 0u) {
+        uint32_t cycles = trace_switch_cycles;
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+        g_bench_stats.full_count++;
+        g_bench_stats.full_sum_cycles += cycles;
+        if (cycles > g_bench_stats.full_max_cycles) {
+            g_bench_stats.full_max_cycles = cycles;
+        }
+        g_bench_stats.full_sum_squares += bench_square(cycles);
+#endif
+#if SENTINEL_TRACE
+        uint8_t tid = g_switch_in_tid;
+        uint32_t wait_ms = g_switch_in_wait_ms;
+#endif
+        trace_switch_ready = 0u;
+#if SENTINEL_TRACE
+        PROBE_SWITCH_IN(task_get(tid), cycles, wait_ms);
+#endif
+    }
+    trace_switch_armed = 0u;
+#endif
     g_in_isr = (frame->cause == EXCCAUSE_LEVEL1_INTERRUPT);
     uint32_t sp = dispatch_inner(frame);
     g_in_isr = 0;
