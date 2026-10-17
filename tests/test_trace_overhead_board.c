@@ -118,9 +118,9 @@ static void overhead_coordinator(void *arg) {
         uint32_t emitted = 0u;
         uint32_t dropped = 0u;
 #endif
-        /* La UART del bare metal puede perder algun byte aislado: repetir
-         * fuera de la ventana medida permite recuperar la linea completa. */
-        for (uint32_t copy = 0u; copy < 3u; copy++) {
+        /* La UART del bare metal puede perder bytes al imprimir dos lineas
+         * seguidas. Repetirlas con pausa ocurre fuera de la ventana medida. */
+        for (uint32_t copy = 0u; copy < 12u; copy++) {
             kprintf("TRACE_OVERHEAD: trace=%u run=%u ms=%u elapsed=%u idle=%u switches=%u sum=%u max=%u sq_hi=%u sq_lo=%u ops=%u emitted=%u dropped=%u errors=%u\r\n",
                     (uint32_t)SENTINEL_TRACE, run, OVERHEAD_RUN_MS,
                     elapsed_cycles, idle_cycles, stats.count,
@@ -133,6 +133,7 @@ static void overhead_coordinator(void *arg) {
                     stats.full_sum_cycles, stats.full_max_cycles,
                     (uint32_t)(stats.full_sum_squares >> 32),
                     (uint32_t)stats.full_sum_squares);
+            task_sleep(60u);
         }
         if (errors != 0u || dropped != 0u || stats.count == 0u ||
             stats.full_count == 0u ||
