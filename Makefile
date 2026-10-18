@@ -35,7 +35,7 @@ ifeq ($(TRANSPORT),1)
 ifeq ($(TRACE),0)
 $(error TRANSPORT=1 requiere TRACE=1)
 endif
-SRCS_C += kernel/core/transport.c
+SRCS_C += kernel/core/transport.c kernel/core/downlink.c
 endif
 
 # La prueba del ring buffer se incluye solo cuando se pide expresamente.
@@ -135,6 +135,8 @@ test:
 	@mkdir -p $(BUILD)
 	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_frame.c kernel/core/frame.c -o $(BUILD)/test_frame
 	./$(BUILD)/test_frame
+	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_downlink.c kernel/core/downlink.c kernel/core/frame.c -o $(BUILD)/test_downlink
+	./$(BUILD)/test_downlink
 	python3 -m unittest discover -s tests -p test_bridge.py
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST tests/test_heap.c kernel/mm/heap.c -o $(BUILD)/test_heap
 	./$(BUILD)/test_heap

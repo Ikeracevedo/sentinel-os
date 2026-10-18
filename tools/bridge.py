@@ -25,6 +25,9 @@ FRAME_HELLO = 0x05
 FRAME_HEARTBEAT = 0x06
 FRAME_CMD = 0x81
 FRAME_TRACE_CFG = 0x82
+TRACE_ENABLE = 0x01
+TRACE_FILTER = 0x02
+TRACE_SAMPLE = 0x03
 EVENT = struct.Struct("<IBBHII")
 HEADER = struct.Struct("<BBHH")
 STATS = struct.Struct("<QIIIIHHIIIIIIBBBB")
@@ -255,6 +258,7 @@ class Bridge:
         self.sinks = list(sinks)
         self.dropped_device = 0
         self.events = 0
+        self.hello_count = 0
 
     def publish(self, kind: str, data: dict) -> None:
         for sink in self.sinks:
@@ -265,6 +269,7 @@ class Bridge:
         for frame in self.decoder.feed(chunk):
             p = frame.payload
             if frame.kind == FRAME_HELLO:
+                self.hello_count += 1
                 self.clock.reset()
                 self.dropped_device = 0
                 # Payload v1: trace_enabled (1 B), build ASCII restante.
@@ -322,19 +327,56 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sink", choices=("console", "sqlite"), action="append")
     ap.add_argument("--db", default="sentinel.db")
     ap.add_argument("--record", help="Grabar bytes crudos")
-    ap.add_argument("--cmd", help="Enviar comando al shell remoto")
+    action = ap.add_mutually_exclusive_group()
+    action.add_argument("--cmd", help="Enviar comando al shell remoto")
+    action.add_argument("--trace-enable", choices=("on", "off"),
+                        help="Encender o apagar la traza en caliente")
+    action.add_argument("--trace-filter", nargs=2, metavar=("TIPO", "on|off"),
+                        help="Activar o desactivar un tipo de evento (ej. 0x01 on)")
+    action.add_argument("--trace-sample", type=int, metavar="N",
+                        help="Muestreo 1 de N para cambios de tarea (1..65535)")
     ap.add_argument("--reset", action="store_true",
                     help="Reiniciar ESP32 al abrir el puerto para capturar HELLO")
     ap.add_argument("--stats", action="store_true", help="Mostrar contadores cada 5 s")
     ap.add_argument("--duration", type=float,
                     help="Terminar la captura del puerto tras N segundos")
     args = ap.parse_args(argv)
-    if args.cmd and not args.port:
-        ap.error("--cmd requiere --port")
+    has_action = (args.cmd is not None or args.trace_enable is not None or
+                  args.trace_filter is not None or args.trace_sample is not None)
+    if has_action and not args.port:
+        ap.error("los comandos descendentes requieren --port")
     if args.reset and not args.port:
         ap.error("--reset requiere --port")
     if args.duration is not None and (not args.port or args.duration <= 0):
         ap.error("--duration requiere --port y un numero positivo de segundos")
+    outbound = None
+    if args.cmd is not None:
+        try:
+            command = args.cmd.encode("ascii")
+        except UnicodeEncodeError:
+            ap.error("el comando debe contener solo ASCII")
+        if not 1 <= len(command) <= 127 or any(b < 0x20 or b > 0x7E for b in command):
+            ap.error("el comando debe tener 1..127 caracteres ASCII imprimibles")
+        outbound = encode_frame(FRAME_CMD, 0, command)
+    elif args.trace_enable is not None:
+        payload = bytes((TRACE_ENABLE, int(args.trace_enable == "on")))
+        outbound = encode_frame(FRAME_TRACE_CFG, 0, payload)
+    elif args.trace_filter is not None:
+        try:
+            event_type = int(args.trace_filter[0], 0)
+        except ValueError:
+            ap.error("TIPO debe ser un entero (ej. 1 o 0x01)")
+        state = args.trace_filter[1]
+        if not 0 <= event_type <= 255 or state not in ("on", "off"):
+            ap.error("TIPO debe estar entre 0 y 255 y el estado debe ser on/off")
+        payload = bytes((TRACE_FILTER, event_type, int(state == "on")))
+        outbound = encode_frame(FRAME_TRACE_CFG, 0, payload)
+    elif args.trace_sample is not None:
+        if not 1 <= args.trace_sample <= 65535:
+            ap.error("--trace-sample requiere N entre 1 y 65535")
+        payload = bytes((TRACE_SAMPLE, args.trace_sample & 0xFF,
+                         args.trace_sample >> 8))
+        outbound = encode_frame(FRAME_TRACE_CFG, 0, payload)
     sinks: list[Sink] = []
     for choice in args.sink or ["console"]:
         sinks.append(SqliteSink(args.db) if choice == "sqlite" else ConsoleSink())
@@ -348,17 +390,21 @@ def main(argv: list[str] | None = None) -> int:
                 import serial
             except ImportError as exc:
                 raise SystemExit("Falta pyserial: python3 -m pip install pyserial") from exc
-            stream = serial.Serial(args.port, args.baud, timeout=0.5)
+            # Configurar DTR/RTS antes de abrir COM: una conexion para --cmd
+            # no debe reiniciar accidentalmente el ESP32.
+            stream = serial.Serial(port=None, baudrate=args.baud, timeout=0.5)
+            stream.dtr = False
+            stream.rts = False
+            stream.port = args.port
+            stream.open()
             if args.reset:
                 stream.setDTR(False)
                 stream.setRTS(True)
                 time.sleep(0.1)
                 stream.setRTS(False)
-            if args.cmd:
-                command = args.cmd.encode("ascii")
-                if not command or len(command) >= 128:
-                    ap.error("el comando debe ser ASCII y tener 1..127 bytes")
-                stream.write(encode_frame(FRAME_CMD, 0, command))
+            if outbound is not None and not args.reset:
+                stream.write(outbound)
+                outbound = None
         else:
             stream = Path(args.replay).open("rb")
         last_report = time.monotonic()
@@ -367,6 +413,9 @@ def main(argv: list[str] | None = None) -> int:
             chunk = stream.read(4096)
             if chunk:
                 bridge.feed(chunk)
+                if outbound is not None and bridge.hello_count:
+                    stream.write(outbound)
+                    outbound = None
             elif args.replay:
                 break
             now = time.monotonic()

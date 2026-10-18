@@ -20,6 +20,12 @@ enum {
     FRAME_ACK       = 0x83
 };
 
+enum {
+    FRAME_TRACE_ENABLE = 0x01,
+    FRAME_TRACE_FILTER = 0x02,
+    FRAME_TRACE_SAMPLE = 0x03
+};
+
 /* CRC sobre VER..PAYLOAD, excluyendo los dos bytes de sync. */
 uint16_t frame_crc16(const uint8_t *bytes, uint16_t len);
 
