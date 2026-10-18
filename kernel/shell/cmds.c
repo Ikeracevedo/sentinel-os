@@ -8,6 +8,7 @@
 #include <sentinel/heap.h>
 #include <sentinel/task.h>
 #include <sentinel/kprintf.h>
+#include <sentinel/probe.h>
 #include "../drivers/uart.h"
 #include "../drivers/gpio.h"
 #include "../core/sched.h"
@@ -570,6 +571,9 @@ static int cmd_kill(int argc, char **argv) {
 /* ---- registro ---- */
 
 void shell_register_builtins(void) {
+#if SENTINEL_TRACE
+    trace_register_command();
+#endif
     cmd_register("help",    cmd_help,    "lista los comandos", "help [comando]");
     cmd_register("ls",      cmd_ls,      "lista un directorio", "ls [ruta]");
     cmd_register("cd",      cmd_cd,      "cambia de directorio", "cd [ruta]   (sin argumentos: /home/iker)");

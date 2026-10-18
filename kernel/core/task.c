@@ -2,6 +2,7 @@
 #include "../arch/xtensa/context.h"
 #include <sentinel/kprintf.h>
 #include <sentinel/panic.h>
+#include <sentinel/probe.h>
 #include "sched.h"
 #include <sentinel/sync.h>
 #include <sentinel/heap.h>
@@ -78,6 +79,9 @@ tcb_t *task_register_boot(const char *name) {
     t->quantum_left = t->quantum_ticks;
     t->cwd[0] = '/';
     t->state = TASK_RUNNING;
+#if SENTINEL_TRACE
+    trace_probe_emit(EV_TASK_CREATE, t->tid, t->priority, t->stack_size);
+#endif
     return t;
 }
 
@@ -114,6 +118,10 @@ void task_free(tcb_t *t) {
     t->waiting_on = NULL;
     t->waiting_kind = 0;
     t->timed_wait = 0;
+#if SENTINEL_TRACE
+    /* El formato transporta los 32 bits bajos del contador CPU de la tarea. */
+    trace_probe_emit(EV_TASK_EXIT, t->tid, 0u, (uint32_t)t->cpu_cycles);
+#endif
     t->state = TASK_UNUSED;
 }
 
@@ -287,6 +295,9 @@ int32_t task_create(const char *name, task_fn_t fn, void *arg,
     /* Se publica al final: recien aqui el scheduler puede elegirla. */
     uint32_t saved_ps = irq_disable();
     sched_make_ready(t);
+#if SENTINEL_TRACE
+    trace_probe_emit(EV_TASK_CREATE, t->tid, t->priority, t->stack_size);
+#endif
     irq_restore(saved_ps);
     sched_preempt_check();
 

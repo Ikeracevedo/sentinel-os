@@ -23,6 +23,23 @@ static uint32_t g_win_idle_base;
 static uint32_t g_win_next_ms;
 static uint32_t g_idle_percent;
 
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+#if SENTINEL_TRACE
+static uint32_t g_next_heartbeat_ms;
+#endif
+/* El vector toma CCOUNT al entrar y cerca del retorno a la tarea.
+ * EV_SWITCH_IN se publica al entrar en la siguiente excepcion, cuando ya
+ * existe la medicion. Estos cuatro simbolos los usa vectors.S. */
+volatile uint32_t trace_switch_armed;
+volatile uint32_t trace_switch_ready;
+volatile uint32_t trace_switch_start;
+volatile uint32_t trace_switch_cycles;
+#if SENTINEL_TRACE
+static volatile uint8_t g_switch_in_tid;
+static volatile uint32_t g_switch_in_wait_ms;
+#endif
+#endif
+
 /* Una cola FIFO circular por nivel de prioridad (0 = maxima, 7 = idle).
  * La tarea que esta corriendo NO esta en ninguna cola. */
 static uint8_t g_rq[TASK_PRIORITY_LEVELS][MAX_TASKS];
@@ -32,6 +49,10 @@ static uint8_t g_rq_count[TASK_PRIORITY_LEVELS];
 /* El contexto de arranque (kmain) pasa a ser la tarea idle: tid 0, prioridad 7,
  * nunca termina ni se bloquea, y por eso siempre hay algo ejecutable. */
 void sched_init(void) {
+#if SENTINEL_TRACE
+    trace_init();
+#endif
+
     g_idle = task_register_boot("idle");
     if (g_idle == NULL || g_idle->tid != 0) {
         panic("sched_init: la tarea idle debe ser el tid 0");
@@ -43,6 +64,20 @@ void sched_init(void) {
     g_win_idle_base = 0;
     g_win_next_ms = uptime_ms() + IDLE_WINDOW_MS;
     g_idle_percent = 0;
+
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+#if SENTINEL_TRACE
+    g_next_heartbeat_ms = uptime_ms() + 100u;
+#endif
+    trace_switch_armed = 0u;
+    trace_switch_ready = 0u;
+#if SENTINEL_TRACE
+    /* heap_stats recorre la arena: tomar la muestra desde una tarea, no desde el tick. */
+    if (task_create("trace-heap", trace_heap_stats_task, NULL, 0u, 0u) < 0) {
+        panic("sched_init: no se pudo crear trace-heap");
+    }
+#endif
+#endif
 }
 
 uint32_t cpu_idle_percent(void) {
@@ -134,7 +169,7 @@ static void wake_sleepers(void) {
             sched_make_ready(t);
         } else if (t->state == TASK_BLOCKED && t->timed_wait &&
                    (int32_t)(now - t->wake_at_tick) >= 0) {
-            sync_expire_wait(t);   /* plazo vencido: sale de la cola de espera */
+            sync_expire_wait(t);
         }
     }
 }
@@ -143,6 +178,37 @@ static void wake_sleepers(void) {
  * despues) para comprobar el presupuesto de < 20 ciclos por cambio. */
 static uint32_t g_stats_cost_total;
 static uint32_t g_stats_cost_count;
+
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+static sched_bench_stats_t g_bench_stats;
+
+static uint64_t bench_square(uint32_t cycles) {
+    /* Evita la multiplicacion de 64 bits: bare metal no enlaza libgcc. */
+    if (cycles <= 65535u) {
+        return (uint64_t)(cycles * cycles);
+    }
+    uint32_t lo = cycles & 0xffffu;
+    uint32_t hi = cycles >> 16;
+    return (uint64_t)(lo * lo) +
+           ((uint64_t)(lo * hi) << 17) +
+           ((uint64_t)(hi * hi) << 32);
+}
+
+void sched_bench_reset(void) {
+    uint32_t saved_ps = irq_disable();
+    g_bench_stats = (sched_bench_stats_t){0};
+    irq_restore(saved_ps);
+}
+
+void sched_bench_snapshot(sched_bench_stats_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    uint32_t saved_ps = irq_disable();
+    *out = g_bench_stats;
+    irq_restore(saved_ps);
+}
+#endif
 
 static void note_switch_in(tcb_t *next) {
     uint32_t t0 = cpu_cycles();
@@ -160,8 +226,8 @@ uint32_t sched_stats_avg_cycles(void) {
 }
 
 /* Canario de pila: vive en la direccion mas baja de la pila. Si cambio, la tarea
- * desbordo. idle (tid 0) usa la pila del linker y no tiene canario (stack_base NULL). */
- static void check_canary(const tcb_t *t) {
+ * desbordo. idle (tid 0) usa la pila del linker y no tiene canario. */
+static void check_canary(const tcb_t *t) {
     if (t->stack_base != NULL &&
         *(volatile uint32_t *)t->stack_base != STACK_CANARY) {
         kprintf("DESBORDAMIENTO DE PILA: tarea '%s' (tid=%u)\r\n",
@@ -170,12 +236,19 @@ uint32_t sched_stats_avg_cycles(void) {
     }
 }
 
-
-
-/* Guarda el marco de la tarea saliente, elige la siguiente y devuelve su marco.
- * Lo comparten yield (syscall) y la apropiacion por timer. */
-static uint32_t switch_task(uint32_t frame_sp) {
+/*
+ * Guarda el marco saliente, elige la siguiente tarea y publica la nueva
+ * tarea actual. reason explica por que salio la tarea anterior.
+ */
+static uint32_t switch_task(uint32_t frame_sp, uint32_t reason) {
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+    uint32_t bench_start = cpu_cycles();
+#endif
+#if !SENTINEL_TRACE
+    (void)reason;
+#endif
     tcb_t *prev = g_current;
+
     prev->sp = frame_sp;
     check_canary(prev);
     if (prev->state == TASK_RUNNING) {
@@ -187,14 +260,38 @@ static uint32_t switch_task(uint32_t frame_sp) {
         panic("sched: no hay ninguna tarea ejecutable");
     }
     if (prev->state == TASK_TERMINATED) {
-        task_free(prev);   /* seguimos en su pila hasta el rfe, pero nadie mas puede reusar la ranura antes */
+        task_free(prev);
     }
+
     note_switch_in(next);
-    PROBE_SWITCH_OUT(prev, next, (uint32_t)prev->state);
-    PROBE_SWITCH_IN(next, (uint32_t)next->cpu_cycles, uptime_ms() - next->ready_since);
+
+#if SENTINEL_TRACE
+    uint32_t wait_ms = uptime_ms() - next->ready_since;
+    PROBE_SWITCH_OUT(prev, next, reason);
+#endif
+
     next->state = TASK_RUNNING;
     next->quantum_left = next->quantum_ticks;
     g_current = next;
+
+#if SENTINEL_TRACE
+    g_switch_in_tid = next->tid;
+    g_switch_in_wait_ms = wait_ms;
+#endif
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    trace_switch_armed = 1u;
+#endif
+
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+    uint32_t bench_cycles = cpu_cycles() - bench_start;
+    g_bench_stats.count++;
+    g_bench_stats.sum_cycles += bench_cycles;
+    if (bench_cycles > g_bench_stats.max_cycles) {
+        g_bench_stats.max_cycles = bench_cycles;
+    }
+    g_bench_stats.sum_squares += bench_square(bench_cycles);
+#endif
+
     return next->sp;
 }
 
@@ -212,7 +309,7 @@ int sched_add_tick_hook(void (*fn)(void)) {
     int rc = -1;
     for (uint32_t i = 0; i < MAX_TICK_HOOKS && rc < 0; i++) {
         if (g_tick_hooks[i] == fn) {
-            rc = 0;                      /* ya estaba */
+            rc = 0;
         } else if (g_tick_hooks[i] == NULL) {
             g_tick_hooks[i] = fn;
             rc = 0;
@@ -242,7 +339,17 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
     if (g_current == NULL) {
         return frame_sp;
     }
+
+#if SENTINEL_TRACE
+    if (is_tick && (int32_t)(uptime_ms() - g_next_heartbeat_ms) >= 0) {
+        /* El latido usa la ruta directa: los filtros de HU-E07-07 no deben callarlo. */
+        trace_emit(EV_HEARTBEAT, 0u, uptime_ms(), trace_dropped());
+        g_next_heartbeat_ms += 100u;
+    }
+#endif
+
     account();
+
     if (is_tick) {
         if ((int32_t)(uptime_ms() - g_win_next_ms) >= 0) {
             close_idle_window();
@@ -250,28 +357,71 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
         wake_sleepers();
         for (uint32_t h = 0; h < MAX_TICK_HOOKS; h++) {
             if (g_tick_hooks[h] != NULL) {
-                g_tick_hooks[h]();   /* aun dentro del ISR: pueden hacer sem_post */
+                g_tick_hooks[h]();
             }
         }
         if (g_current->quantum_left > 0) {
             g_current->quantum_left--;
         }
+
         uint32_t best = best_ready_prio();
         int expired = (g_current->quantum_left == 0);
-        if (best < g_current->priority || (expired && best == g_current->priority)) {
-            return switch_task(frame_sp);
+
+        if (best < g_current->priority) {
+            return switch_task(frame_sp, TRACE_SWITCH_PREEMPT);
+        }
+        if (expired && best == g_current->priority) {
+            return switch_task(frame_sp, TRACE_SWITCH_QUANTUM);
         }
         if (expired) {
             g_current->quantum_left = g_current->quantum_ticks;
         }
         return frame_sp;
     }
-    return switch_task(frame_sp);
+
+#if SENTINEL_TRACE
+    uint32_t reason = TRACE_SWITCH_YIELD;
+    if (g_current->state == TASK_TERMINATED) {
+        reason = TRACE_SWITCH_EXIT;
+    } else if (g_current->state != TASK_RUNNING) {
+        reason = TRACE_SWITCH_BLOCK;
+    } else if (best_ready_prio() < g_current->priority) {
+        reason = TRACE_SWITCH_PREEMPT;
+    }
+
+    return switch_task(frame_sp, reason);
+#else
+    return switch_task(frame_sp, 0u);
+#endif
 }
 
-/* Marca el contexto de interrupcion mientras dura el despacho del tick: ahi sem_post
- * no debe ceder la CPU (el propio despachador decide el cambio al final). */
+/* Marca el contexto de interrupcion mientras dura el despacho del tick:
+ * ahi sem_post no debe ceder ni bloquear la CPU. */
 uint32_t sched_dispatch(ctx_frame_t *frame) {
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    /* La interrupcion anterior ya termino de restaurar el contexto. Publicar
+     * su duracion antes de que este despacho pueda emitir otro SWITCH_OUT. */
+    if (trace_switch_ready != 0u) {
+        uint32_t cycles = trace_switch_cycles;
+#if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
+        g_bench_stats.full_count++;
+        g_bench_stats.full_sum_cycles += cycles;
+        if (cycles > g_bench_stats.full_max_cycles) {
+            g_bench_stats.full_max_cycles = cycles;
+        }
+        g_bench_stats.full_sum_squares += bench_square(cycles);
+#endif
+#if SENTINEL_TRACE
+        uint8_t tid = g_switch_in_tid;
+        uint32_t wait_ms = g_switch_in_wait_ms;
+#endif
+        trace_switch_ready = 0u;
+#if SENTINEL_TRACE
+        PROBE_SWITCH_IN(task_get(tid), cycles, wait_ms);
+#endif
+    }
+    trace_switch_armed = 0u;
+#endif
     g_in_isr = (frame->cause == EXCCAUSE_LEVEL1_INTERRUPT);
     uint32_t sp = dispatch_inner(frame);
     g_in_isr = 0;

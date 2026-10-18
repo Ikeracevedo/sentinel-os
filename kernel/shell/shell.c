@@ -15,7 +15,20 @@
 #include "../drivers/uart.h"
 #include "../core/sched.h"
 
+#ifndef SENTINEL_TRANSPORT
+#define SENTINEL_TRANSPORT 0
+#endif
+#if SENTINEL_TRANSPORT
+#include <sentinel/downlink.h>
+#include <sentinel/frame.h>
+#include <sentinel/trace.h>
+#endif
+
+#if SENTINEL_TRANSPORT
+#define RX_RING 512u
+#else
 #define RX_RING 128u
+#endif
 #define MAX_CMDS 40u
 
 typedef struct {
@@ -90,6 +103,28 @@ static uint8_t           g_rx[RX_RING];
 static volatile uint32_t g_rx_head;
 static uint32_t          g_rx_tail;
 static sem_t             g_rx_sem;
+#if SENTINEL_TRANSPORT
+static downlink_parser_t g_downlink;
+static uint8_t g_command[SHELL_LINE_MAX];
+static uint16_t g_command_len;
+static uint16_t g_command_pos;
+
+static int apply_trace_cfg(const downlink_frame_t *frame) {
+    const uint8_t *p = frame->payload;
+    if (frame->length == 2u && p[0] == FRAME_TRACE_ENABLE && p[1] <= 1u) {
+        trace_set_enabled(p[1]);
+        return 1;
+    }
+    if (frame->length == 3u && p[0] == FRAME_TRACE_FILTER && p[2] <= 1u) {
+        return trace_set_filter(p[1], p[2]) == 0;
+    }
+    if (frame->length == 3u && p[0] == FRAME_TRACE_SAMPLE) {
+        uint32_t rate = (uint32_t)p[1] | ((uint32_t)p[2] << 8);
+        return trace_set_sample_rate(rate) == 0;
+    }
+    return 0;
+}
+#endif
 
 /* Corre dentro del ISR del tick. Productor unico (head); la tarea es el consumidor (tail). */
 static void rx_poll_hook(void) {
@@ -106,10 +141,42 @@ static void rx_poll_hook(void) {
 }
 
 static int shell_getc(void) {
-    sem_wait(&g_rx_sem);                    /* BLOCKED hasta que llegue un caracter */
-    int c = g_rx[g_rx_tail];
-    g_rx_tail = (g_rx_tail + 1u) % RX_RING;
-    return c;
+    for (;;) {
+#if SENTINEL_TRANSPORT
+        if (g_command_pos < g_command_len) {
+            return g_command[g_command_pos++];
+        }
+#endif
+        sem_wait(&g_rx_sem);                /* BLOCKED hasta que llegue un byte */
+        int c = g_rx[g_rx_tail];
+        g_rx_tail = (g_rx_tail + 1u) % RX_RING;
+#if SENTINEL_TRANSPORT
+        downlink_frame_t frame;
+        uint32_t crc_errors_before = g_downlink.crc_errors;
+        if (!downlink_feed(&g_downlink, (uint8_t)c, &frame)) {
+            if (g_downlink.crc_errors != crc_errors_before) {
+                kprintf("downlink: CRC invalido (total=%u)\r\n",
+                        g_downlink.crc_errors);
+            }
+            continue;
+        }
+        if (frame.kind == FRAME_TRACE_CFG) {
+            kprintf("trace cfg: %s\r\n", apply_trace_cfg(&frame) ? "ok" : "invalida");
+            continue;
+        }
+        if (!downlink_command_valid(frame.payload, frame.length)) {
+            continue;
+        }
+        for (uint16_t i = 0u; i < frame.length; i++) {
+            g_command[i] = frame.payload[i];
+        }
+        g_command[frame.length] = '\r';
+        g_command_pos = 0u;
+        g_command_len = (uint16_t)(frame.length + 1u);
+#else
+        return c;
+#endif
+    }
 }
 
 /* ---- historial ---- */
@@ -294,6 +361,11 @@ static void shell_task(void *arg) {
 
     vfs_chdir("/home/iker");
     sem_init(&g_rx_sem, 0);
+#if SENTINEL_TRANSPORT
+    downlink_init(&g_downlink);
+    g_command_len = 0u;
+    g_command_pos = 0u;
+#endif
     sched_add_tick_hook(rx_poll_hook);
 
     kprintf("\r\nSentinel OS v0.1 - shell (escribe help)\r\n");
