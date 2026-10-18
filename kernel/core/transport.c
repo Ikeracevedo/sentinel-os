@@ -12,6 +12,10 @@ static uint16_t g_frame_seq;
 static volatile uint32_t g_frames_dropped;
 static volatile uint32_t g_events_dropped;
 
+/* A carga nominal caben varios eventos por despertar sin acercarse al limite
+ * de 16 por trama. Menos despertares reducen el coste del tracer y del UART. */
+#define TRACER_POLL_MS 20u
+
 typedef struct __attribute__((packed)) {
     uint64_t uptime_ticks;
     uint32_t heap_total;
@@ -135,7 +139,7 @@ static void tracer_task(void *arg) {
                 g_events_dropped += count;
             }
         }
-        task_sleep(10u);
+        task_sleep(TRACER_POLL_MS);
     }
 }
 
