@@ -4,6 +4,7 @@ SIZE     := $(PREFIX)size
 ESPTOOL  := esptool.py
 
 TRACE    ?= 1
+TRANSPORT ?= 0
 BUILD    := build
 ifeq ($(TRACE),0)
 BUILD    := build/trace-off
@@ -18,16 +19,23 @@ EXTRA    :=
 
 CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
             -ffreestanding -fno-builtin -nostdlib -mno-longcalls \
-            -Ikernel/include -DSENTINEL_TRACE=$(TRACE) $(EXTRA)
+            -Ikernel/include -DSENTINEL_TRACE=$(TRACE) -DSENTINEL_TRANSPORT=$(TRANSPORT) $(EXTRA)
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/mm/heap.c
+SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/core/frame.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/mm/heap.c
 SRCS_S   := kernel/arch/xtensa/start.S kernel/arch/xtensa/vectors.S
 
 # En TRACE=0 no se enlazan ni las funciones ni los 32 KB del ring buffer.
 ifeq ($(TRACE),0)
 SRCS_C   := $(filter-out kernel/core/trace.c kernel/shell/trace_cmd.c,$(SRCS_C))
+endif
+
+ifeq ($(TRANSPORT),1)
+ifeq ($(TRACE),0)
+$(error TRANSPORT=1 requiere TRACE=1)
+endif
+SRCS_C += kernel/core/transport.c
 endif
 
 # La prueba del ring buffer se incluye solo cuando se pide expresamente.
@@ -64,6 +72,27 @@ ifeq ($(TRACE_OVERHEAD_BOARD_TEST),1)
 SRCS_C += tests/test_trace_overhead_board.c
 CFLAGS += -DTRACE_OVERHEAD_BENCH=1
 LDFLAGS += -Wl,--wrap=shell_start
+endif
+
+# E08: prueba acotada de tramas reales en UART, sin shell concurrente.
+FRAME_BOARD_TEST ?= 0
+ifeq ($(FRAME_BOARD_TEST),1)
+SRCS_C += tests/test_frame_board.c
+CFLAGS += -DFRAME_BOARD_TEST=1
+endif
+
+# Flujo determinista a ritmo sostenido, con UART bloqueante, para aislar
+# cable/USB del emisor por interrupcion de TRANSPORT=1.
+FRAME_BOARD_STRESS ?= 0
+ifeq ($(FRAME_BOARD_STRESS),1)
+ifneq ($(FRAME_BOARD_TEST),1)
+$(error FRAME_BOARD_STRESS=1 requiere FRAME_BOARD_TEST=1)
+endif
+FRAME_BOARD_DRAIN_CHUNK ?= 0
+FRAME_BOARD_STRESS_SLEEP_MS ?= 10
+CFLAGS += -DFRAME_BOARD_STRESS=1 \
+          -DFRAME_BOARD_DRAIN_CHUNK=$(FRAME_BOARD_DRAIN_CHUNK) \
+          -DFRAME_BOARD_STRESS_SLEEP_MS=$(FRAME_BOARD_STRESS_SLEEP_MS)
 endif
 
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
@@ -104,6 +133,9 @@ HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
 # Pruebas en WSL: heap, VFS y ring buffer de traza.
 test:
 	@mkdir -p $(BUILD)
+	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_frame.c kernel/core/frame.c -o $(BUILD)/test_frame
+	./$(BUILD)/test_frame
+	python3 -m unittest discover -s tests -p test_bridge.py
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST tests/test_heap.c kernel/mm/heap.c -o $(BUILD)/test_heap
 	./$(BUILD)/test_heap
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST -DVFS_HOST tests/test_vfs.c kernel/fs/vfs.c kernel/mm/heap.c -o $(BUILD)/test_vfs

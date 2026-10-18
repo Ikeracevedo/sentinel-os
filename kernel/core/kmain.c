@@ -10,6 +10,9 @@
 #include <sentinel/vfs.h>
 #include <sentinel/procfs.h>
 #include <sentinel/shell.h>
+#if SENTINEL_TRANSPORT
+#include <sentinel/transport.h>
+#endif
 #include "../arch/xtensa/cpu.h"
 
 /* 1 = correr el test de desbordamiento de pila (termina en PANIC a proposito). */
@@ -20,8 +23,15 @@
 
 /* 1 = en vez de la bateria de pruebas, correr el soak: 5 tareas concurrentes durante
  * SOAK_SECONDS vigilando integridad (E02: cooperativo/apropiativo, 5 min / 30 min / 1 h). */
-/* Velocidad del puerto serie. El monitor del Makefile abre a 115200. */
+/* E08 necesita ancho de banda para la traza; el modo clasico conserva 57600.
+ * Un override de compilacion permite probar velocidades sin editar el codigo. */
+#ifndef UART_BAUD
+#if SENTINEL_TRANSPORT
+#define UART_BAUD       921600u
+#else
 #define UART_BAUD       57600u
+#endif
+#endif
 
 /* Modo de arranque. Por defecto el sistema arranca en el SHELL. Para correr la bateria de
  * pruebas en la placa: make EXTRA="-DRUN_SHELL=0" (tools/run_board.sh tests lo hace). */
@@ -31,6 +41,12 @@
 
 #ifndef RUN_SOAK
 #define RUN_SOAK        0
+#endif
+#ifndef FRAME_BOARD_TEST
+#define FRAME_BOARD_TEST 0
+#endif
+#if FRAME_BOARD_TEST
+void frame_board_start(void);
 #endif
 #ifndef SOAK_SECONDS
 #define SOAK_SECONDS    300u
@@ -654,7 +670,16 @@ void kmain(void) {
     vfs_populate_demo();
     timer_init(1000);
     sched_init();
-    if (RUN_SHELL) {
+    if (FRAME_BOARD_TEST) {
+#if FRAME_BOARD_TEST
+        frame_board_start();
+#endif
+    } else if (RUN_SHELL) {
+#if SENTINEL_TRANSPORT
+        if (transport_start() != 0) {
+            panic("no se pudo iniciar tracer");
+        }
+#endif
         shell_start();
     } else {
         task_create("ctl", controller_task, (void *)0, 0, 0);
