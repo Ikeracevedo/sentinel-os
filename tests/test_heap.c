@@ -393,6 +393,38 @@ static void test_owner_override(void) {
     kfree(kernel);
 }
 
+/* Patron exacto de E09 frag: heap con ocupacion de arranque, bloques medianos
+ * alternos y una solicitud grande que no cabe aunque sobre memoria total. */
+static void test_e09_frag_pattern(void) {
+    heap_init();
+    (void)kmalloc_owner(1604u, 0u); /* 1628 B usados, como el arranque en placa */
+    heap_stats_t initial = stats();
+    void *blocks[64] = {0};
+    uint32_t count = 0u;
+    heap_host_tid = 4u;
+    while (count < 64u && (blocks[count] = kmalloc(3072u)) != NULL) {
+        count++;
+    }
+    for (uint32_t i = 0; i < count; i += 2u) {
+        kfree(blocks[i]);
+    }
+    heap_stats_t fragmented = stats();
+    void *large = kmalloc(4096u);
+    CHECK(count > 20u && fragmented.free > 30000u &&
+          fragmented.largest_free_block < 4096u && large == NULL,
+          "E09 frag: >30 KB libres, sin hueco para 4096 B");
+    CHECK(heap_frag_percent(&fragmented) > 50u,
+          "E09 frag: indice superior al 50%");
+    if (large != NULL) {
+        kfree(large);
+    }
+    CHECK(heap_free_owned(4u) == count / 2u,
+          "E09 frag: kill recupera los bloques supervivientes");
+    heap_host_tid = 0u;
+    CHECK(same_layout(initial, stats()),
+          "E09 frag: stop restaura exactamente el heap previo");
+}
+
 int main(void) {
     test_init();
     test_alloc_basic();
@@ -406,6 +438,7 @@ int main(void) {
     test_chunked_walk();
     test_free_owned();
     test_owner_override();
+    test_e09_frag_pattern();
 
     printf("\n%d asserts, %d fallos -> %s\n", g_total, g_failed, g_failed ? "FALLO" : "OK");
     return g_failed ? 1 : 0;

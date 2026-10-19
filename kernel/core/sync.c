@@ -141,6 +141,7 @@ static int lock_common(mutex_t *m, int timed, uint32_t ms) {
 
     /* Bloquear. Orden obligatorio: waiting_on ANTES de BLOCKED (ver cabecera). */
     t->wait_started = cpu_cycles();
+    t->wait_started_ms = uptime_ms();
     t->waiting_on = m;
     t->waiting_kind = (uint8_t)WAIT_MUTEX;
     t->wait_result = 0;
@@ -236,6 +237,7 @@ static int sem_wait_common(sem_t *s, int timed, uint32_t ms) {
     }
 
     t->wait_started = cpu_cycles();
+    t->wait_started_ms = uptime_ms();
     t->waiting_on = s;
     t->waiting_kind = (uint8_t)WAIT_SEM;
     t->wait_result = 0;

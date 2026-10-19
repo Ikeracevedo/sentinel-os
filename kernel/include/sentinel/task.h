@@ -41,6 +41,7 @@ typedef struct tcb {
     uint32_t     sp;             /* Debe ser el primer campo: lo asume context.S */
     task_state_t state;
     uint8_t      tid;
+    uint32_t     instance_id;    /* cambia cada vez que se reutiliza esta ranura */
     uint8_t      priority;       /* 0 = maxima, 7 = idle */
     uint32_t     quantum_ticks;  /* cuanto configurado, en ticks (1 tick = 1 ms) */
     uint32_t     quantum_left;   /* ticks que le quedan en su turno actual */
@@ -62,6 +63,7 @@ typedef struct tcb {
     uint8_t      timed_wait;     /* BLOCKED con plazo (wake_at_tick) */
     int8_t       wait_result;    /* 0 = adquirido, -1 = expiro */
     uint32_t     wait_started;   /* CCOUNT al empezar a esperar (PROBE_LOCK_ACQ) */
+    uint32_t     wait_started_ms;/* uptime al bloquearse; ps -v mide el bloqueo actual */
     void        *owned[TASK_MAX_OWNED];
 
     char         cwd[TASK_CWD_LEN];  /* ruta en texto, solo informativa */
