@@ -259,6 +259,8 @@ class Bridge:
         self.dropped_device = 0
         self.events = 0
         self.hello_count = 0
+        self.shell_ready = False
+        self.log_tail = ""
 
     def publish(self, kind: str, data: dict) -> None:
         for sink in self.sinks:
@@ -270,6 +272,8 @@ class Bridge:
             p = frame.payload
             if frame.kind == FRAME_HELLO:
                 self.hello_count += 1
+                self.shell_ready = False
+                self.log_tail = ""
                 self.clock.reset()
                 self.dropped_device = 0
                 # Payload v1: trace_enabled (1 B), build ASCII restante.
@@ -302,8 +306,14 @@ class Bridge:
                                           data["events_dropped"])
                 self.publish("stats", data)
             elif frame.kind in (FRAME_LOG, FRAME_ALERT):
+                text = p.decode("ascii", "replace")
+                if frame.kind == FRAME_LOG:
+                    self.log_tail = (self.log_tail + text)[-128:]
+                    prompt = self.log_tail.rfind("sentinel:")
+                    if prompt >= 0 and "$ " in self.log_tail[prompt:]:
+                        self.shell_ready = True
                 self.publish("log" if frame.kind == FRAME_LOG else "alert",
-                             {"text": p.decode("ascii", "replace")})
+                             {"text": text})
             elif frame.kind == FRAME_HEARTBEAT:
                 self.publish("heartbeat", {})
 
@@ -384,6 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         sinks.append(FileSink(args.record))
     bridge = Bridge(sinks)
     stream = None
+    outbound_at = None
     try:
         if args.port:
             try:
@@ -402,9 +413,11 @@ def main(argv: list[str] | None = None) -> int:
                 stream.setRTS(True)
                 time.sleep(0.1)
                 stream.setRTS(False)
-            if outbound is not None and not args.reset:
-                stream.write(outbound)
-                outbound = None
+            if outbound is not None:
+                # Abrir el puerto puede reiniciar la placa incluso sin --reset.
+                # Esperar el prompt evita enviar durante el arranque. Si una
+                # trama LOG se pierde, el plazo da una ruta de recuperación.
+                outbound_at = time.monotonic() + 2.0
         else:
             stream = Path(args.replay).open("rb")
         last_report = time.monotonic()
@@ -413,12 +426,13 @@ def main(argv: list[str] | None = None) -> int:
             chunk = stream.read(4096)
             if chunk:
                 bridge.feed(chunk)
-                if outbound is not None and bridge.hello_count:
-                    stream.write(outbound)
-                    outbound = None
             elif args.replay:
                 break
             now = time.monotonic()
+            if outbound is not None and (bridge.shell_ready or
+                                         (outbound_at is not None and now >= outbound_at)):
+                stream.write(outbound)
+                outbound = None
             if deadline is not None and now >= deadline:
                 break
             if args.stats and now - last_report >= 5:

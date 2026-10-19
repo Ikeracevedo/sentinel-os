@@ -95,6 +95,16 @@ class ProtocolTests(unittest.TestCase):
         bridge.feed(encode_frame(FRAME_HELLO, 0, b"\x01nuevo"))
         self.assertEqual(bridge.dropped_device, 0)
 
+    def test_shell_prompt_split_across_log_frames(self):
+        bridge = Bridge()
+        bridge.feed(encode_frame(FRAME_HELLO, 0, b"\x01build"))
+        bridge.feed(encode_frame(FRAME_LOG, 1, b"sentinel:/home/"))
+        self.assertFalse(bridge.shell_ready)
+        bridge.feed(encode_frame(FRAME_LOG, 2, b"iker$ "))
+        self.assertTrue(bridge.shell_ready)
+        bridge.feed(encode_frame(FRAME_HELLO, 0, b"\x01nuevo"))
+        self.assertFalse(bridge.shell_ready)
+
 
 if __name__ == "__main__":
     unittest.main()

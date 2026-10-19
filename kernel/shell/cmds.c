@@ -8,6 +8,7 @@
 #include <sentinel/heap.h>
 #include <sentinel/task.h>
 #include <sentinel/sync.h>
+#include <sentinel/graph.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
 #include "../drivers/uart.h"
@@ -327,6 +328,13 @@ static int cmd_sync(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_graph(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    graph_dump();
+    return 0;
+}
+
 static int cmd_help(int argc, char **argv) {
     if (argc >= 2) {
         for (uint32_t i = 0; i < shell_cmd_count(); i++) {
@@ -619,6 +627,7 @@ void shell_register_builtins(void) {
     cmd_register("ps",      cmd_ps,      "lista las tareas", "ps [-v] [nombre]");
     cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]   (-v: mapa del heap)");
     cmd_register("sync",    cmd_sync,    "muestra propietarios y esperas de mutex", "sync");
+    cmd_register("graph",   cmd_graph,   "muestra aristas del grafo de espera", "graph");
     cmd_register("uptime",  cmd_uptime,  "tiempo desde el arranque", "uptime");
     cmd_register("uname",   cmd_uname,   "informacion del sistema", "uname [-a]");
     cmd_register("clear",   cmd_clear,   "limpia la pantalla", "clear");

@@ -23,7 +23,7 @@ CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/core/frame.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/shell/inject_cmd.c kernel/mm/heap.c
+SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/core/frame.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/graph.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/shell/inject_cmd.c kernel/mm/heap.c
 SRCS_S   := kernel/arch/xtensa/start.S kernel/arch/xtensa/vectors.S
 
 # En TRACE=0 no se enlazan ni las funciones ni los 32 KB del ring buffer.
@@ -133,6 +133,8 @@ HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
 # Pruebas en WSL: heap, VFS y ring buffer de traza.
 test:
 	@mkdir -p $(BUILD)
+	$(HOSTCC) $(HOSTFLAGS) -O2 -Werror -DGRAPH_HOST tests/test_graph.c kernel/core/graph.c -o $(BUILD)/test_graph
+	./$(BUILD)/test_graph
 	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_frame.c kernel/core/frame.c -o $(BUILD)/test_frame
 	./$(BUILD)/test_frame
 	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_downlink.c kernel/core/downlink.c kernel/core/frame.c -o $(BUILD)/test_downlink
