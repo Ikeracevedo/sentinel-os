@@ -43,6 +43,7 @@ typedef struct tcb {
     uint8_t      tid;
     uint32_t     instance_id;    /* cambia cada vez que se reutiliza esta ranura */
     uint8_t      priority;       /* 0 = maxima, 7 = idle */
+    uint8_t      recover_stack_fault; /* solo escenario E09: mata esta tarea al fallar canario */
     uint32_t     quantum_ticks;  /* cuanto configurado, en ticks (1 tick = 1 ms) */
     uint32_t     quantum_left;   /* ticks que le quedan en su turno actual */
     uint32_t     wake_at_tick;   /* SLEEPING: tick (ms) en que debe despertar */

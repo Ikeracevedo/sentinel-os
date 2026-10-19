@@ -11,7 +11,7 @@
 #include "../core/time.h"
 #include "../arch/xtensa/cpu.h"
 
-#define INJECT_MAX_TIDS 5u
+#define INJECT_MAX_TIDS 8u
 #define LEAK_DEFAULT_BYTES 256u
 #define LEAK_DEFAULT_INTERVAL_MS 500u
 #define LEAK_MAX_BYTES 4096u
@@ -25,6 +25,9 @@
 #define HOG_MAX_MS 20000u
 #define PRIO_INV_LOW_WORK_CYCLES CPU_FREQ_HZ
 #define PRIO_INV_MAX_MS 20000u
+#define LOAD_MAX_WORKERS 8u
+#define STACK_TEST_BYTES 3072u
+#define STACK_TEST_MARGIN 1536u
 
 typedef struct scenario scenario_t;
 typedef int (*start_fn_t)(scenario_t *, int, char **);
@@ -53,6 +56,22 @@ static volatile uint8_t g_hog_expired;
 static mutex_t g_inv_mutex;
 static volatile uint8_t g_inv_low_locked;
 static volatile uint8_t g_inv_medium_expired;
+static mutex_t g_load_mutex;
+static volatile uint32_t g_load_iterations[LOAD_MAX_WORKERS];
+static volatile uint32_t g_load_alloc_failures;
+static uint32_t g_load_started_ms;
+static uint32_t g_load_period_ms;
+static uint32_t g_load_alloc_bytes;
+static uint32_t g_load_hold_ms;
+static uint32_t g_load_busy_ms;
+static const char *g_load_profile;
+static volatile uint32_t g_stack_depth;
+static volatile uint32_t g_stack_sink;
+static uint32_t g_stack_fault_before;
+static const char *k_load_names[LOAD_MAX_WORKERS] = {
+    "load_0", "load_1", "load_2", "load_3",
+    "load_4", "load_5", "load_6", "load_7"
+};
 static const char *k_dead_names[3] = {"dead_a", "dead_b", "dead_c"};
 static const char *k_dead_mutex_names[3] = {"dead_A", "dead_B", "dead_C"};
 
@@ -305,6 +324,154 @@ static int start_prio_inv(scenario_t *scenario, int argc, char **argv) {
     return 0;
 }
 
+static void load_task(void *arg) {
+    uint32_t index = (uint32_t)(uintptr_t)arg;
+    uint32_t next = uptime_ms();
+    for (;;) {
+        /* Trabajo de CPU y cadencia absolutos: los mismos pasos en cada
+         * ejecucion, sin numeros aleatorios ni dependencia del TID. */
+        uint32_t busy_start = uptime_ms();
+        while ((uint32_t)(uptime_ms() - busy_start) < g_load_busy_ms) {
+            __asm__ __volatile__("" ::: "memory");
+        }
+        void *block = kmalloc(g_load_alloc_bytes);
+        if (block == NULL) {
+            g_load_alloc_failures++;
+        }
+        if (mutex_lock(&g_load_mutex) == 0) {
+            task_sleep(g_load_hold_ms);
+            (void)mutex_unlock(&g_load_mutex);
+        }
+        if (block != NULL) {
+            kfree(block);
+        }
+        g_load_iterations[index]++;
+        next += g_load_period_ms;
+        uint32_t now = uptime_ms();
+        if ((int32_t)(next - now) > 0) {
+            task_sleep(next - now);
+        } else {
+            next = now;
+            task_sleep(1u);
+        }
+    }
+}
+
+static int cleanup_load(scenario_t *scenario) {
+    (void)scenario;
+    return mutex_destroy(&g_load_mutex);
+}
+
+static int start_load(scenario_t *scenario, int argc, char **argv) {
+    if (argc != 3) {
+        shell_print_error("inject", "uso: inject load light|nominal|heavy", NULL);
+        return 1;
+    }
+    uint32_t workers;
+    if (same(argv[2], "light")) {
+        g_load_profile = "light";
+        workers = 2u;
+        g_load_period_ms = 200u;
+        g_load_alloc_bytes = 32u;
+        g_load_hold_ms = 1u;
+        g_load_busy_ms = 0u;
+    } else if (same(argv[2], "nominal")) {
+        g_load_profile = "nominal";
+        workers = 5u;
+        g_load_period_ms = 100u;
+        g_load_alloc_bytes = 64u;
+        g_load_hold_ms = 1u;
+        g_load_busy_ms = 1u;
+    } else if (same(argv[2], "heavy")) {
+        g_load_profile = "heavy";
+        workers = 8u;
+        g_load_period_ms = 50u;
+        g_load_alloc_bytes = 128u;
+        g_load_hold_ms = 2u;
+        g_load_busy_ms = 2u;
+    } else {
+        shell_print_error("inject", "perfil desconocido (light|nominal|heavy)", argv[2]);
+        return 1;
+    }
+    g_load_alloc_failures = 0u;
+    for (uint32_t i = 0; i < LOAD_MAX_WORKERS; i++) {
+        g_load_iterations[i] = 0u;
+    }
+    mutex_init(&g_load_mutex, "load_M");
+    g_load_started_ms = uptime_ms();
+    for (uint32_t i = 0; i < workers; i++) {
+        int32_t tid = task_create(k_load_names[i], load_task,
+                                  (void *)(uintptr_t)i, 5u, 0u);
+        if (tid < 0) {
+            while (scenario->count > 0u) {
+                (void)task_kill(scenario->tids[--scenario->count]);
+            }
+            (void)mutex_destroy(&g_load_mutex);
+            shell_print_error("inject", "no hay ranuras para el perfil de carga", NULL);
+            return 1;
+        }
+        scenario->tids[i] = (uint8_t)tid;
+        scenario->task_instances[i] = task_get((uint32_t)tid)->instance_id;
+        scenario->task_names[i] = k_load_names[i];
+        scenario->count++;
+    }
+    kprintf("inject load %s: %u tareas pri=5, periodo=%u ms, alloc/free=%u B, mutex=%u ms, CPU=%u ms\r\n",
+            g_load_profile, workers, g_load_period_ms, g_load_alloc_bytes,
+            g_load_hold_ms, g_load_busy_ms);
+    return 0;
+}
+
+/* Recursion real, pero el ultimo marco conserva espacio para la interrupcion
+ * y el scheduler. Se corrompe solamente el canario de ESTA tarea: nunca se
+ * escribe fuera de su pila ni se alcanza la pila de una tarea vecina. */
+static void __attribute__((noinline)) stack_recurse(uint32_t depth) {
+    volatile uint8_t frame[96];
+    for (uint32_t i = 0; i < sizeof(frame); i++) {
+        frame[i] = (uint8_t)(depth + i);
+    }
+    g_stack_depth = depth;
+    tcb_t *self = sched_current();
+    if ((uintptr_t)&frame[0] <=
+        (uintptr_t)self->stack_base + STACK_TEST_MARGIN) {
+        *(volatile uint32_t *)self->stack_base = STACK_CANARY ^ 1u;
+        sched_yield();
+        return; /* solo si el scheduler no detecto el canario */
+    }
+    stack_recurse(depth + 1u);
+    /* El acceso posterior a la llamada impide convertirla en salto de cola. */
+    g_stack_sink += frame[depth % sizeof(frame)];
+}
+
+static void stack_overflow_task(void *arg) {
+    (void)arg;
+    stack_recurse(1u);
+}
+
+static int start_stack_overflow(scenario_t *scenario, int argc, char **argv) {
+    (void)argv;
+    if (argc != 2) {
+        shell_print_error("inject", "uso: inject stack-overflow", NULL);
+        return 1;
+    }
+    g_stack_depth = 0u;
+    g_stack_fault_before = sched_recovered_stack_faults();
+    int32_t tid = task_create("stack_ovf", stack_overflow_task, NULL, 5u,
+                              STACK_TEST_BYTES);
+    if (tid < 0) {
+        shell_print_error("inject", "no se pudo crear stack_ovf", NULL);
+        return 1;
+    }
+    tcb_t *t = task_get((uint32_t)tid);
+    t->recover_stack_fault = 1u;
+    scenario->tids[0] = (uint8_t)tid;
+    scenario->task_instances[0] = t->instance_id;
+    scenario->task_names[0] = "stack_ovf";
+    scenario->count = 1u;
+    kprintf("inject stack-overflow: tarea stack_ovf tid=%u, pila=%u B; recursion controlada\r\n",
+            (uint32_t)tid, STACK_TEST_BYTES);
+    return 0;
+}
+
 static int start_frag(scenario_t *scenario, int argc, char **argv) {
     (void)argv;
     if (argc != 2) {
@@ -405,8 +572,10 @@ static scenario_t g_scenarios[] = {
      .start=start_hog},
     {.name="prio-inv", .description="inversion de prioridad", .id=5u,
      .start=start_prio_inv, .cleanup=cleanup_prio_inv},
-    {.name="load", .description="carga sintetica reproducible", .id=6u},
-    {.name="stack-overflow", .description="desbordamiento de pila", .id=7u},
+    {.name="load", .description="carga sintetica reproducible", .id=6u,
+     .start=start_load, .cleanup=cleanup_load},
+    {.name="stack-overflow", .description="desbordamiento de pila", .id=7u,
+     .start=start_stack_overflow},
 };
 #define SCENARIO_COUNT (sizeof(g_scenarios) / sizeof(g_scenarios[0]))
 
@@ -441,6 +610,25 @@ static void reconcile_prio_inv(scenario_t *s) {
     }
 }
 
+static void reconcile_stack_overflow(scenario_t *s) {
+    if (s->id != 7u || !s->active) {
+        return;
+    }
+    tcb_t *t = task_get(s->tids[0]);
+    if (t != NULL && t->instance_id == s->task_instances[0] &&
+        same(t->name, s->task_names[0])) {
+        return;
+    }
+    s->count = 0u;
+    s->active = 0u;
+    if (sched_recovered_stack_faults() != g_stack_fault_before) {
+        kprintf("DESBORDAMIENTO DE PILA: tarea 'stack_ovf' (tid=%u), profundidad=%u; solo ella fue terminada\r\n",
+                (uint32_t)s->tids[0], g_stack_depth);
+    } else {
+        kprintf("inject stack-overflow: tarea terminada sin deteccion de canario\r\n");
+    }
+}
+
 static void list_scenarios(void) {
     kprintf("Escenarios:\r\n");
     for (uint32_t i = 0; i < SCENARIO_COUNT; i++) {
@@ -456,6 +644,7 @@ static void status_scenarios(void) {
         scenario_t *s = &g_scenarios[i];
         reconcile_hog(s);
         reconcile_prio_inv(s);
+        reconcile_stack_overflow(s);
         if (!s->active) {
             continue;
         }
@@ -465,6 +654,17 @@ static void status_scenarios(void) {
             kprintf(" %u", (uint32_t)s->tids[j]);
         }
         kprintf("\r\n");
+        if (s->id == 6u) {
+            uint32_t iterations = 0u;
+            for (uint32_t j = 0; j < s->count; j++) {
+                iterations += g_load_iterations[j];
+            }
+            uint32_t elapsed = uptime_ms() - g_load_started_ms;
+            uint32_t rate_x10 = elapsed > 0u ? (iterations * 10000u) / elapsed : 0u;
+            kprintf("load: perfil=%s tiempo=%u ms ciclos=%u tasa=%u.%u/s fallos_alloc=%u\r\n",
+                    g_load_profile, elapsed, iterations, rate_x10 / 10u,
+                    rate_x10 % 10u, g_load_alloc_failures);
+        }
     }
     if (active == 0u) {
         kprintf("inject: sin escenarios activos\r\n");
@@ -527,10 +727,12 @@ static int cmd_inject(int argc, char **argv) {
                 shell_print_error("inject", "escenario desconocido", argv[2]);
                 return 1;
             }
+            reconcile_stack_overflow(s);
             return stop_scenario(s);
         }
         int rc = 0;
         for (uint32_t i = 0; i < SCENARIO_COUNT; i++) {
+            reconcile_stack_overflow(&g_scenarios[i]);
             if (g_scenarios[i].active && stop_scenario(&g_scenarios[i]) != 0) {
                 rc = 1;
             }
@@ -551,6 +753,7 @@ static int cmd_inject(int argc, char **argv) {
     }
     reconcile_hog(s);
     reconcile_prio_inv(s);
+    reconcile_stack_overflow(s);
     if (s->active) {
         shell_print_error("inject", "escenario ya activo; detengalo primero", s->name);
         return 1;

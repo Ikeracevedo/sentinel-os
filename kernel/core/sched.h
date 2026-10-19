@@ -16,6 +16,9 @@ uint32_t cpu_idle_percent(void);
 /* Costo promedio (ciclos) de mantener las estadisticas en cada cambio de tarea. */
 uint32_t sched_stats_avg_cycles(void);
 
+/* Numero de tareas de prueba retiradas al detectar su canario de pila. */
+uint32_t sched_recovered_stack_faults(void);
+
 #if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
 /* Estadisticas acumuladas del tramo C del cambio de tarea. La prueba de
  * overhead compila exactamente esta medicion en TRACE=0 y TRACE=1. */
