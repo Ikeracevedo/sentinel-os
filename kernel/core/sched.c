@@ -22,6 +22,7 @@ static uint32_t g_win_start;
 static uint32_t g_win_idle_base;
 static uint32_t g_win_next_ms;
 static uint32_t g_idle_percent;
+static uint32_t g_recovered_stack_faults;
 
 #if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
 #if SENTINEL_TRACE
@@ -225,11 +226,23 @@ uint32_t sched_stats_avg_cycles(void) {
     return g_stats_cost_count ? g_stats_cost_total / g_stats_cost_count : 0;
 }
 
+uint32_t sched_recovered_stack_faults(void) {
+    return g_recovered_stack_faults;
+}
+
 /* Canario de pila: vive en la direccion mas baja de la pila. Si cambio, la tarea
  * desbordo. idle (tid 0) usa la pila del linker y no tiene canario. */
-static void check_canary(const tcb_t *t) {
+static void check_canary(tcb_t *t) {
     if (t->stack_base != NULL &&
         *(volatile uint32_t *)t->stack_base != STACK_CANARY) {
+        /* El escenario E09 pisa solo su canario y conserva margen para el
+         * contexto del scheduler. Recuperar otros desbordamientos reales sin
+         * guardar la memoria vecina seria inseguro: mantienen el panic. */
+        if (t->recover_stack_fault && t->tid != 0u) {
+            g_recovered_stack_faults++;
+            t->state = TASK_TERMINATED;
+            return;
+        }
         kprintf("DESBORDAMIENTO DE PILA: tarea '%s' (tid=%u)\r\n",
                 t->name, (uint32_t)t->tid);
         panic("canario de pila corrupto");

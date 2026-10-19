@@ -7,6 +7,7 @@
 #include <sentinel/procfs.h>
 #include <sentinel/heap.h>
 #include <sentinel/task.h>
+#include <sentinel/sync.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
 #include "../drivers/uart.h"
@@ -14,6 +15,8 @@
 #include "../core/sched.h"
 #include "../core/time.h"
 #include "../arch/xtensa/cpu.h"
+
+void inject_register_command(void);
 
 /* ---- utilidades ---- */
 
@@ -317,6 +320,13 @@ static int cmd_free(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_sync(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    sync_dump();
+    return 0;
+}
+
 static int cmd_help(int argc, char **argv) {
     if (argc >= 2) {
         for (uint32_t i = 0; i < shell_cmd_count(); i++) {
@@ -366,19 +376,32 @@ static int cmd_reboot(int argc, char **argv) {
 /* ---- ps ---- */
 
 static uint64_t g_prev_cycles[MAX_TASKS];
+static uint32_t g_prev_instance[MAX_TASKS];
 static uint8_t  g_prev_valid[MAX_TASKS];
 
 static int cmd_ps(int argc, char **argv) {
     int verbose = (argc >= 2 && str_eq(argv[1], "-v"));
+    const char *name = NULL;
+    if (argc > 3 || (argc == 3 && !verbose)) {
+        shell_print_error("ps", "uso: ps [-v] [nombre]", NULL);
+        return 1;
+    }
+    if (argc == 3) {
+        name = argv[2];
+    } else if (argc == 2 && !verbose) {
+        name = argv[1];
+    }
 
     /* % de CPU sobre la ventana desde el ultimo `ps` (la primera vez, desde el arranque). */
     /* cpu_cycles es de 64 bits y el tick lo actualiza: en un nucleo de 32 bits una lectura
      * normal podria partirse justo en el acarreo. Se toma una foto de todos bajo candado. */
     uint64_t cyc[MAX_TASKS];
+    uint32_t instance[MAX_TASKS];
     uint32_t ps = irq_save();
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
         cyc[i] = (t != NULL) ? t->cpu_cycles : 0u;
+        instance[i] = (t != NULL) ? t->instance_id : 0u;
     }
     irq_restore(ps);
 
@@ -388,7 +411,12 @@ static int cmd_ps(int argc, char **argv) {
         tcb_t *t = task_get(i);
         delta[i] = 0;
         if (t != NULL) {
-            delta[i] = (g_prev_valid[i]) ? (cyc[i] - g_prev_cycles[i]) : cyc[i];
+            /* El TID puede reciclarse entre dos invocaciones de ps. Su
+             * contador CPU empieza de cero: restar el de la tarea anterior
+             * produciria underflow y porcentajes mayores que 100. */
+            delta[i] = (g_prev_valid[i] && g_prev_instance[i] == instance[i] &&
+                        cyc[i] >= g_prev_cycles[i]) ?
+                       (cyc[i] - g_prev_cycles[i]) : cyc[i];
             total += delta[i];
         }
     }
@@ -399,13 +427,13 @@ static int cmd_ps(int argc, char **argv) {
     uint32_t total32 = (uint32_t)(total >> shift);
 
     if (verbose) {
-        kprintf("TID NOMBRE     ESTADO    PRI  CPU%%    MEM  CAMBIOS  CPUms  ESPERAms  PILA\r\n");
+        kprintf("TID NOMBRE     ESTADO    PRI  CPU%%    MEM  CAMBIOS  CPUms  ESPERAms  PILA  BLOQms\r\n");
     } else {
         kprintf("TID NOMBRE     ESTADO    PRI  CPU%%    MEM\r\n");
     }
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
-        if (t == NULL) {
+        if (t == NULL || (name != NULL && !str_eq(t->name, name))) {
             continue;
         }
         uint32_t pct = (total32 > 0u) ? (((uint32_t)(delta[i] >> shift)) * 100u) / total32 : 0u;
@@ -425,8 +453,10 @@ static int cmd_ps(int argc, char **argv) {
         }
         kprintf("%3u %4u%% %6u", (uint32_t)t->priority, pct, mem);
         if (verbose) {
-            kprintf("  %7u %6u %9u  %u/%u", t->switches_in, cycles_to_ms64(cyc[i]),
-                    t->max_ready_wait, task_stack_used(t), t->stack_size);
+            uint32_t blocked_ms = (t->state == TASK_BLOCKED) ?
+                                  uptime_ms() - t->wait_started_ms : 0u;
+            kprintf("  %7u %6u %9u  %u/%u  %u", t->switches_in, cycles_to_ms64(cyc[i]),
+                    t->max_ready_wait, task_stack_used(t), t->stack_size, blocked_ms);
         }
         kprintf("\r\n");
     }
@@ -434,6 +464,7 @@ static int cmd_ps(int argc, char **argv) {
         tcb_t *t = task_get(i);
         g_prev_valid[i] = (t != NULL);
         g_prev_cycles[i] = cyc[i];
+        g_prev_instance[i] = instance[i];
     }
     return 0;
 }
@@ -571,6 +602,7 @@ static int cmd_kill(int argc, char **argv) {
 /* ---- registro ---- */
 
 void shell_register_builtins(void) {
+    inject_register_command();
 #if SENTINEL_TRACE
     trace_register_command();
 #endif
@@ -584,8 +616,9 @@ void shell_register_builtins(void) {
     cmd_register("write",   cmd_write,   "escribe texto en un archivo", "write <archivo> <texto...>");
     cmd_register("rm",      cmd_rm,      "borra archivos o directorios", "rm [-r] <ruta>");
     cmd_register("echo",    cmd_echo,    "imprime su texto", "echo <texto...>");
-    cmd_register("ps",      cmd_ps,      "lista las tareas", "ps [-v]");
+    cmd_register("ps",      cmd_ps,      "lista las tareas", "ps [-v] [nombre]");
     cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]   (-v: mapa del heap)");
+    cmd_register("sync",    cmd_sync,    "muestra propietarios y esperas de mutex", "sync");
     cmd_register("uptime",  cmd_uptime,  "tiempo desde el arranque", "uptime");
     cmd_register("uname",   cmd_uname,   "informacion del sistema", "uname [-a]");
     cmd_register("clear",   cmd_clear,   "limpia la pantalla", "clear");

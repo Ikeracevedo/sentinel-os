@@ -558,17 +558,6 @@ void heap_dump(void) {
     HEAP_PRINTF("--- mapa del heap: total=%u usado=%u libre=%u frag=%u%% ---\r\n",
                 s.total, s.used, s.free, frag_of(&s));
 
-    uint32_t shown = (d.total_blocks < HEAP_DUMP_MAX_LINES) ? d.total_blocks : HEAP_DUMP_MAX_LINES;
-    for (uint32_t i = 0; i < shown; i++) {
-        const dump_line_t *l = &d.lines[i];
-        HEAP_PRINTF("%p tam=%u %s %s\r\n", (void *)(g_arena + l->off + HDR), l->size,
-                    l->free ? "LIBRE" : "USADO",
-                    l->free ? "-" : task_name_of(l->owner));
-    }
-    if (d.total_blocks > shown) {
-        HEAP_PRINTF("... (+%u bloques mas)\r\n", d.total_blocks - shown);
-    }
-
     char line[HEAP_DUMP_CELLS + 1u];
     for (uint32_t i = 0; i < HEAP_DUMP_CELLS; i++) {
         if (d.cells[i] == 0) {
@@ -580,6 +569,20 @@ void heap_dump(void) {
         }
     }
     line[HEAP_DUMP_CELLS] = '\0';
+    /* El transporte tiene una cola LOG acotada. Imprimir primero el mapa
+     * asegura que la vista de fragmentacion llegue completa aunque el
+     * detalle posterior de 32 bloques llene esa cola. */
     HEAP_PRINTF("[%s]\r\n", line);
     HEAP_PRINTF("# usado  + mixto  . libre   (1 celda = %u B)\r\n", HEAP_DUMP_CELL_SIZE);
+
+    uint32_t shown = (d.total_blocks < HEAP_DUMP_MAX_LINES) ? d.total_blocks : HEAP_DUMP_MAX_LINES;
+    for (uint32_t i = 0; i < shown; i++) {
+        const dump_line_t *l = &d.lines[i];
+        HEAP_PRINTF("%p tam=%u %s %s\r\n", (void *)(g_arena + l->off + HDR), l->size,
+                    l->free ? "LIBRE" : "USADO",
+                    l->free ? "-" : task_name_of(l->owner));
+    }
+    if (d.total_blocks > shown) {
+        HEAP_PRINTF("... (+%u bloques mas)\r\n", d.total_blocks - shown);
+    }
 }

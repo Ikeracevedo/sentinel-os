@@ -14,6 +14,7 @@
 
 static tcb_t   g_tasks[MAX_TASKS];
 static uint8_t g_stacks[MAX_TASKS][TASK_STACK_SIZE] __attribute__((aligned(16)));
+static uint32_t g_next_instance_id;
 
 _Static_assert(offsetof(tcb_t, sp) == 0,
                "sp debe ser el primer campo del TCB (lo asume el assembly)");
@@ -60,6 +61,7 @@ tcb_t *task_alloc(void) {
         if (g_tasks[i].state == TASK_UNUSED) {
             zero_words(&g_tasks[i], sizeof(tcb_t));
             g_tasks[i].tid = (uint8_t)i;
+            g_tasks[i].instance_id = ++g_next_instance_id;
             g_tasks[i].state = TASK_SUSPENDED;
             return &g_tasks[i];
         }
