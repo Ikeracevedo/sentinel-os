@@ -63,6 +63,55 @@ static uint32_t count_edges(const graph_t *g) {
     return count;
 }
 
+typedef struct { uint8_t from; uint8_t to; } edge_t;
+
+static void expect_cycle(const edge_t *edges, uint32_t n,
+                         const uint8_t *expected, uint32_t count) {
+    graph_t g = {0};
+    graph_cycle_t cycle;
+    for (uint32_t i = 0; i < n; i++) {
+        graph_add_edge(&g, edges[i].from, edges[i].to);
+    }
+    int found = graph_find_cycle(&g, &cycle);
+    assert(found == (count > 0u));
+    assert(cycle.count == count);
+    for (uint32_t i = 0; i < count; i++) {
+        assert(cycle.tid[i] == expected[i]);
+    }
+}
+
+static void test_cycles(void) {
+    expect_cycle(NULL, 0u, NULL, 0u);                                /* vacio */
+    expect_cycle((edge_t[]){{0, 1}}, 1u, NULL, 0u);                  /* una espera */
+    expect_cycle((edge_t[]){{0, 1}, {1, 2}, {2, 3}}, 3u, NULL, 0u); /* cadena */
+    expect_cycle((edge_t[]){{0, 1}, {0, 2}, {1, 3}, {2, 3}},
+                 4u, NULL, 0u);                                    /* diamante */
+    expect_cycle((edge_t[]){{0, 1}, {1, 3}, {0, 2}, {2, 3}},
+                 4u, NULL, 0u);                                    /* negro != ciclo */
+    expect_cycle((edge_t[]){{4, 5}, {5, 4}}, 2u,
+                 (uint8_t[]){4, 5}, 2u);                            /* 2 tareas */
+    expect_cycle((edge_t[]){{1, 2}, {2, 3}, {3, 1}}, 3u,
+                 (uint8_t[]){1, 2, 3}, 3u);                         /* 3 tareas */
+    expect_cycle((edge_t[]){{0, 1}, {1, 2}, {2, 3}, {3, 0}}, 4u,
+                 (uint8_t[]){0, 1, 2, 3}, 4u);                      /* ciclo largo */
+    expect_cycle((edge_t[]){{0, 1}, {7, 8}, {8, 7}}, 3u,
+                 (uint8_t[]){7, 8}, 2u);                            /* componentes */
+    expect_cycle((edge_t[]){{1, 2}, {2, 1}, {6, 7}, {7, 6}}, 4u,
+                 (uint8_t[]){1, 2}, 2u);                            /* dos ciclos */
+    expect_cycle((edge_t[]){{9, 9}}, 1u,
+                 (uint8_t[]){9}, 1u);                               /* autolazo sintetico */
+    expect_cycle((edge_t[]){{0, 1}, {1, 2}, {2, 3}, {3, 2}}, 4u,
+                 (uint8_t[]){2, 3}, 2u);                            /* cola hacia ciclo */
+
+    edge_t full[MAX_TASKS];
+    uint8_t expected[MAX_TASKS];
+    for (uint32_t i = 0; i < MAX_TASKS; i++) {
+        full[i] = (edge_t){(uint8_t)i, (uint8_t)((i + 1u) % MAX_TASKS)};
+        expected[i] = (uint8_t)i;
+    }
+    expect_cycle(full, MAX_TASKS, expected, MAX_TASKS);             /* 16 tareas */
+}
+
 int main(void) {
     graph_t g;
     reset();
@@ -114,6 +163,7 @@ int main(void) {
     reset();
     graph_dump();
     assert(saves == restores && irq_depth == 0u);
-    puts("graph: matriz coherente, filtros y ciclos 2/3 OK");
+    test_cycles();
+    puts("graph: matriz y DFS iterativo, 13 grafos sinteticos OK");
     return 0;
 }

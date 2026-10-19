@@ -18,12 +18,12 @@ FLASH_ADDR := 0x1000
 EXTRA    :=
 
 CFLAGS   := -Wall -Wextra -Werror -std=c11 -O2 \
-            -ffreestanding -fno-builtin -nostdlib -mno-longcalls \
+            -ffreestanding -fno-builtin -nostdlib -mno-longcalls -MMD -MP \
             -Ikernel/include -DSENTINEL_TRACE=$(TRACE) -DSENTINEL_TRANSPORT=$(TRANSPORT) $(EXTRA)
 
 LDFLAGS  := -T linker.ld -nostdlib
 
-SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/core/frame.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/graph.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/shell/inject_cmd.c kernel/mm/heap.c
+SRCS_C   := kernel/core/kmain.c kernel/core/panic.c kernel/core/time.c kernel/core/frame.c kernel/arch/xtensa/irq.c kernel/drivers/gpio.c kernel/drivers/uart.c kernel/lib/kprintf.c kernel/lib/memops.c kernel/core/task.c kernel/core/sched.c kernel/core/sync.c kernel/core/graph.c kernel/core/detector.c kernel/core/selftest.c kernel/core/tests_e04.c kernel/core/tests_e05.c kernel/core/trace.c kernel/fs/vfs.c kernel/fs/procfs.c kernel/shell/shell.c kernel/shell/cmds.c kernel/shell/trace_cmd.c kernel/shell/inject_cmd.c kernel/mm/heap.c
 SRCS_S   := kernel/arch/xtensa/start.S kernel/arch/xtensa/vectors.S
 
 # En TRACE=0 no se enlazan ni las funciones ni los 32 KB del ring buffer.
@@ -96,6 +96,7 @@ CFLAGS += -DFRAME_BOARD_STRESS=1 \
 endif
 
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
+-include $(OBJS:.o=.d)
 
 .PHONY: all clean flash monitor size test
 
@@ -140,6 +141,8 @@ test:
 	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_downlink.c kernel/core/downlink.c kernel/core/frame.c -o $(BUILD)/test_downlink
 	./$(BUILD)/test_downlink
 	python3 -m unittest discover -s tests -p test_bridge.py
+	python3 -m unittest discover -s tests -p test_e10_graph_board.py
+	python3 -m unittest discover -s tests -p test_e10_nominal_board.py
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST tests/test_heap.c kernel/mm/heap.c -o $(BUILD)/test_heap
 	./$(BUILD)/test_heap
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST -DVFS_HOST tests/test_vfs.c kernel/fs/vfs.c kernel/mm/heap.c -o $(BUILD)/test_vfs

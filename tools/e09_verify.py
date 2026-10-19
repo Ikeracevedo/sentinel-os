@@ -40,7 +40,7 @@ class Capture(Sink):
 
 
 class Board:
-    def __init__(self, port: str, baud: int, db: Path) -> None:
+    def __init__(self, port: str, baud: int, db: Path | None) -> None:
         import serial
 
         self.capture = Capture()
@@ -49,7 +49,8 @@ class Board:
         self.serial.rts = False
         self.serial.port = port
         self.serial.open()
-        self.bridge = Bridge((self.capture, SqliteSink(str(db))))
+        sinks = (self.capture,) if db is None else (self.capture, SqliteSink(str(db)))
+        self.bridge = Bridge(sinks)
         self.pump(0.3)
 
     def close(self) -> None:

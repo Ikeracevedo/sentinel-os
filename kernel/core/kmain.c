@@ -10,6 +10,7 @@
 #include <sentinel/vfs.h>
 #include <sentinel/procfs.h>
 #include <sentinel/shell.h>
+#include <sentinel/detector.h>
 #if SENTINEL_TRANSPORT
 #include <sentinel/transport.h>
 #endif
@@ -681,6 +682,9 @@ void kmain(void) {
         }
 #endif
         shell_start();
+        if (detector_start() != 0) {
+            panic("no se pudo iniciar detector");
+        }
     } else {
         task_create("ctl", controller_task, (void *)0, 0, 0);
         kprintf("controlador creado; kmain es ahora la tarea idle\r\n");
