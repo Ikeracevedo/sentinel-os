@@ -339,28 +339,63 @@ static int cmd_graph(int argc, char **argv) {
 static int cmd_detector(int argc, char **argv) {
     if (argc != 1) {
         uint32_t threshold;
-        if (argc != 3 || !str_eq(argv[1], "starve") ||
-            shell_parse_uint(argv[2], &threshold) != 0 ||
-            detector_set_starve_threshold(threshold) != 0) {
-            shell_print_error("detector", "uso: detector [starve <100..60000 ms>]", NULL);
+        if (argc != 3 || shell_parse_uint(argv[2], &threshold) != 0 ||
+            !(str_eq(argv[1], "starve")
+              ? detector_set_starve_threshold(threshold) == 0
+              : str_eq(argv[1], "jitter") &&
+                detector_set_jitter_threshold(threshold) == 0)) {
+            shell_print_error("detector", "uso: detector [starve <100..60000 ms>|jitter <1..1000 us>]", NULL);
             return 1;
         }
     }
     detector_stats_t stats;
     detector_stats(&stats);
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
     kprintf("detector: chequeos=%u alertas=%u ultimo=%u ciclos (%u us) "
             "maximo=%u ciclos (%u us) grafo_max=%u ciclos "
             "dfs_max=%u ciclos frag_chequeos=%u frag_alertas=%u "
             "frag=%u%% libre=%u mayor=%u "
             "inanicion_chequeos=%u inanicion_alertas=%u "
-            "espera_max=%u ms umbral=%u ms\r\n",
+            "espera_max=%u ms umbral=%u ms "
+            "inversion_chequeos=%u inversion_alertas=%u "
+            "inversion_max=%u ms "
+            "jitter_chequeos=%u jitter_alertas=%u jitter_umbral=%u us\r\n",
             stats.runs, stats.alerts, stats.last_cycles,
             cycles_to_us(stats.last_cycles), stats.max_cycles,
             cycles_to_us(stats.max_cycles), stats.max_graph_cycles,
             stats.max_dfs_cycles, stats.frag_checks, stats.frag_alerts,
             stats.frag_percent, stats.frag_free, stats.frag_largest,
             stats.starve_checks, stats.starve_alerts,
-            stats.starve_max_wait_ms, stats.starve_threshold_ms);
+            stats.starve_max_wait_ms, stats.starve_threshold_ms,
+            stats.inversion_checks, stats.inversion_alerts,
+            stats.inversion_max_ms, stats.jitter_checks,
+            stats.jitter_alerts, stats.jitter_threshold_us);
+    kprintf("jitter: muestras=%u min=%u us max=%u us media=%u us "
+            "desviacion=%u us\r\n", jitter.samples, jitter.min_us,
+            jitter.max_us, jitter.mean_us, jitter.stddev_us);
+    return 0;
+}
+
+static int cmd_health(int argc, char **argv) {
+    (void)argv;
+    if (argc != 1) {
+        shell_print_error("health", "uso: health", NULL);
+        return 1;
+    }
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
+    detector_stats_t stats;
+    detector_stats(&stats);
+    if (jitter.samples == 0u) {
+        kprintf("health: jitter de switch sin muestras (TRACE desactivado)\r\n");
+        return 0;
+    }
+    kprintf("health: jitter de switch %s; muestras=%u min=%u us max=%u us "
+            "media=%u us desviacion=%u us umbral=%u us\r\n",
+            jitter.stddev_us > stats.jitter_threshold_us ? "ALERTA" : "OK",
+            jitter.samples, jitter.min_us, jitter.max_us,
+            jitter.mean_us, jitter.stddev_us, stats.jitter_threshold_us);
     return 0;
 }
 
@@ -657,7 +692,8 @@ void shell_register_builtins(void) {
     cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]   (-v: mapa del heap)");
     cmd_register("sync",    cmd_sync,    "muestra propietarios y esperas de mutex", "sync");
     cmd_register("graph",   cmd_graph,   "muestra aristas del grafo de espera", "graph");
-    cmd_register("detector", cmd_detector, "muestra el coste y las alertas del detector", "detector [starve <100..60000 ms>]");
+    cmd_register("detector", cmd_detector, "muestra el coste y las alertas del detector", "detector [starve <100..60000 ms>|jitter <1..1000 us>]");
+    cmd_register("health", cmd_health, "resume el jitter de cambio de contexto", "health");
     cmd_register("uptime",  cmd_uptime,  "tiempo desde el arranque", "uptime");
     cmd_register("uname",   cmd_uname,   "informacion del sistema", "uname [-a]");
     cmd_register("clear",   cmd_clear,   "limpia la pantalla", "clear");

@@ -44,6 +44,14 @@ def pathology_alerts(output: str) -> tuple[int, int]:
     return int(frag.group(1)), int(starve.group(1))
 
 
+def jitter_metrics(output: str) -> tuple[int, int, int, int, int]:
+    match = re.search(r"jitter: muestras=(\d+) min=(\d+) us max=(\d+) us "
+                      r"media=(\d+) us desviacion=(\d+) us", output)
+    if match is None:
+        raise RuntimeError(f"metricas de jitter incompletas: {output!r}")
+    return tuple(map(int, match.groups()))
+
+
 def no_cycle(output: str) -> None:
     edges, cycles = edges_and_cycles(output)
     if "sin ciclos" not in output or cycles >= 2000:
@@ -111,9 +119,11 @@ def main() -> int:
                 no_cycle(board.command("graph"))
                 detector_text = board.command("detector")
                 runs, alerts, max_cycles = detector_state(detector_text)
+                jitter_samples, jitter_min, jitter_max, jitter_mean, jitter_std = jitter_metrics(detector_text)
                 if (alerts != alerts_before or
                         pathology_alerts(detector_text) != pathologies_before or
-                        max_cycles >= 4000):
+                        max_cycles >= 4000 or jitter_samples != 64 or
+                        not jitter_min <= jitter_mean <= jitter_max):
                     raise RuntimeError("falsa alerta o coste >100 us: "
                                        f"chequeos={runs}, alertas={alerts}, "
                                        f"maximo={max_cycles} ciclos")
@@ -122,7 +132,9 @@ def main() -> int:
                 print(f"[{elapsed:.0f}/{args.duration} s] "
                       f"carga={load_ms / 1000:.0f} s, ciclos={iterations}, "
                       f"detector={runs} chequeos, alertas nuevas=0, "
-                      f"maximo={max_cycles / 40:.1f} us", flush=True)
+                      f"maximo={max_cycles / 40:.1f} us; "
+                      f"jitter={jitter_mean}±{jitter_std} us "
+                      f"[{jitter_min},{jitter_max}]", flush=True)
                 next_report += 30.0 if args.duration < 3600 else 60.0
 
             # Comprobacion final aunque el ultimo intervalo no termine en
@@ -130,17 +142,22 @@ def main() -> int:
             _, iterations, alloc_failures = load_status(board.command("inject status"))
             detector_text = board.command("detector")
             runs, alerts, max_cycles = detector_state(detector_text)
+            jitter_samples, jitter_min, jitter_max, jitter_mean, jitter_std = jitter_metrics(detector_text)
             no_cycle(board.command("graph"))
             if (iterations == 0 or iterations < previous_iterations or
                     alloc_failures != 0 or alerts != alerts_before or
                     pathology_alerts(detector_text) != pathologies_before or
-                    max_cycles >= 4000 or observed.event_alerts or
+                    max_cycles >= 4000 or jitter_samples != 64 or
+                    not jitter_min <= jitter_mean <= jitter_max or
+                    observed.event_alerts or
                     observed.frame_alerts):
                 raise RuntimeError("condiciones nominales no cumplidas al final")
             if runs - runs_before < args.duration * 2 - 4:
                 raise RuntimeError("el detector no ejecuto suficientes chequeos")
             print(f"observacion: {args.duration} s, sin alertas falsas; "
-                  f"{runs - runs_before} chequeos; maximo={max_cycles / 40:.1f} us",
+                  f"{runs - runs_before} chequeos; maximo={max_cycles / 40:.1f} us; "
+                  f"jitter={jitter_mean}±{jitter_std} us "
+                  f"[{jitter_min},{jitter_max}]",
                   flush=True)
         except BaseException as error:
             failure = error

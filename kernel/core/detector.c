@@ -16,6 +16,11 @@
 #define DETECTOR_PRINT_POLL_MS 20u
 #define FRAG_PERIOD_MS 1000u
 #define STARVE_DEFAULT_MS 500u
+#define INVERSION_PERIOD_MS 100u
+#define INVERSION_COOLDOWN_MS 10000u
+#define JITTER_PERIOD_MS 1000u
+#define JITTER_COOLDOWN_MS 10000u
+#define JITTER_DEFAULT_US 50u
 
 typedef struct {
     graph_cycle_t cycle;
@@ -42,6 +47,42 @@ static volatile detector_stats_t g_stats;
 static uint32_t g_next_due;
 static uint32_t g_next_frag_due;
 static uint8_t g_frag_level;
+static uint32_t g_next_inversion_due;
+static uint32_t g_next_jitter_due;
+static uint32_t g_jitter_last_alert_ms;
+static volatile uint32_t g_jitter_threshold_us = JITTER_DEFAULT_US;
+static uint64_t g_inversion_prev_cpu[MAX_TASKS];
+static uint32_t g_inversion_prev_instance[MAX_TASKS];
+static uint32_t g_inversion_high_instance[MAX_TASKS];
+static uint32_t g_inversion_owner_instance[MAX_TASKS];
+static uint32_t g_inversion_started_ms[MAX_TASKS];
+static uint32_t g_inversion_last_alert_ms[MAX_TASKS];
+static uint32_t g_inversion_mutex_id[MAX_TASKS];
+
+typedef struct {
+    uint32_t instance;
+    uint32_t wait_started_ms;
+    uint32_t mutex_id;
+    uint64_t cpu_cycles;
+    uint8_t state;
+    uint8_t priority;
+    uint8_t owner_tid;
+} inversion_task_t;
+
+typedef struct {
+    uint8_t high_tid;
+    uint8_t low_tid;
+    uint8_t medium_tid;
+    uint8_t high_priority;
+    uint8_t low_priority;
+    uint8_t medium_priority;
+    uint32_t high_instance;
+    uint32_t low_instance;
+    uint32_t medium_instance;
+    uint32_t mutex_id;
+    uint32_t duration_ms;
+    uint32_t blocked_ms;
+} inversion_alert_t;
 
 static int same_cycle(const graph_cycle_t *a, const graph_cycle_t *b) {
     if (a->count != b->count) {
@@ -161,6 +202,178 @@ static void detector_check_fragmentation(void) {
     g_frag_level = level;
 }
 
+/* Una foto coherente del mutex y las tareas evita mezclar dos cambios de
+ * propietario. El analisis de CPU se hace despues, con interrupciones activas. */
+static void inversion_snapshot(inversion_task_t tasks[MAX_TASKS]) {
+    for (uint32_t tid = 0u; tid < MAX_TASKS; tid++) {
+        tasks[tid] = (inversion_task_t){0};
+        tasks[tid].owner_tid = 0xffu;
+    }
+    uint32_t ps = irq_save();
+    for (uint32_t tid = 0u; tid < MAX_TASKS; tid++) {
+        inversion_task_t *s = &tasks[tid];
+        tcb_t *t = task_get(tid);
+        if (t == NULL) {
+            continue;
+        }
+        s->instance = t->instance_id;
+        s->state = (uint8_t)t->state;
+        s->priority = t->priority;
+        s->cpu_cycles = t->cpu_cycles;
+        s->wait_started_ms = t->wait_started_ms;
+        if (t->state != TASK_BLOCKED || t->waiting_kind != WAIT_MUTEX ||
+            t->waiting_on == NULL) {
+            continue;
+        }
+        mutex_t *m = (mutex_t *)t->waiting_on;
+        tcb_t *owner = m->owner;
+        if (owner == NULL || owner->tid >= MAX_TASKS ||
+            task_get(owner->tid) != owner) {
+            continue;
+        }
+        for (uint32_t k = 0u; k < owner->owned_count && k < TASK_MAX_OWNED; k++) {
+            if (owner->owned[k] == m) {
+                s->owner_tid = owner->tid;
+                s->mutex_id = m->id;
+                break;
+            }
+        }
+    }
+    irq_restore(ps);
+}
+
+static void detector_check_inversion(void) {
+    uint32_t now = uptime_ms();
+    if ((int32_t)(now - g_next_inversion_due) < 0) {
+        return;
+    }
+    g_next_inversion_due = now + INVERSION_PERIOD_MS;
+    inversion_task_t tasks[MAX_TASKS];
+    inversion_snapshot(tasks);
+    g_stats.inversion_checks++;
+
+    for (uint32_t high_tid = 1u; high_tid < MAX_TASKS; high_tid++) {
+        inversion_task_t *high = &tasks[high_tid];
+        uint32_t low_tid = high->owner_tid;
+        if (high->instance == 0u || low_tid >= MAX_TASKS ||
+            tasks[low_tid].instance == 0u ||
+            tasks[low_tid].state != TASK_READY ||
+            tasks[low_tid].priority <= high->priority) {
+            g_inversion_started_ms[high_tid] = 0u;
+            continue;
+        }
+        inversion_task_t *low = &tasks[low_tid];
+        uint32_t medium_tid = MAX_TASKS;
+        uint64_t most_cpu = 0u;
+        for (uint32_t tid = 1u; tid < MAX_TASKS; tid++) {
+            inversion_task_t *medium = &tasks[tid];
+            if (tid == high_tid || tid == low_tid || medium->instance == 0u ||
+                (medium->state != TASK_READY && medium->state != TASK_RUNNING) ||
+                medium->priority <= high->priority ||
+                medium->priority >= low->priority ||
+                g_inversion_prev_instance[tid] != medium->instance) {
+                continue;
+            }
+            uint64_t used = medium->cpu_cycles - g_inversion_prev_cpu[tid];
+            if (used > most_cpu) {
+                most_cpu = used;
+                medium_tid = tid;
+            }
+        }
+        if (medium_tid >= MAX_TASKS || most_cpu < CPU_FREQ_HZ / 1000u) {
+            g_inversion_started_ms[high_tid] = 0u;
+            continue;
+        }
+        if (g_inversion_high_instance[high_tid] != high->instance ||
+            g_inversion_owner_instance[high_tid] != low->instance ||
+            g_inversion_mutex_id[high_tid] != high->mutex_id) {
+            g_inversion_high_instance[high_tid] = high->instance;
+            g_inversion_owner_instance[high_tid] = low->instance;
+            g_inversion_mutex_id[high_tid] = high->mutex_id;
+            g_inversion_last_alert_ms[high_tid] = now - INVERSION_COOLDOWN_MS;
+            g_inversion_started_ms[high_tid] = now;
+            continue;
+        }
+        if (g_inversion_started_ms[high_tid] == 0u) {
+            g_inversion_started_ms[high_tid] = now;
+            continue;
+        }
+        uint32_t duration = now - g_inversion_started_ms[high_tid];
+        if (duration > g_stats.inversion_max_ms) {
+            g_stats.inversion_max_ms = duration;
+        }
+        if (duration < INVERSION_PERIOD_MS ||
+            now - g_inversion_last_alert_ms[high_tid] < INVERSION_COOLDOWN_MS) {
+            continue;
+        }
+        g_inversion_last_alert_ms[high_tid] = now;
+        g_stats.inversion_alerts++;
+        inversion_alert_t alert = {
+            .high_tid = (uint8_t)high_tid, .low_tid = (uint8_t)low_tid,
+            .medium_tid = (uint8_t)medium_tid,
+            .high_priority = high->priority, .low_priority = low->priority,
+            .medium_priority = tasks[medium_tid].priority,
+            .high_instance = high->instance, .low_instance = low->instance,
+            .medium_instance = tasks[medium_tid].instance,
+            .mutex_id = high->mutex_id, .duration_ms = duration,
+            .blocked_ms = now - high->wait_started_ms,
+        };
+        tcb_t *h = task_get(alert.high_tid);
+        tcb_t *l = task_get(alert.low_tid);
+        tcb_t *m = task_get(alert.medium_tid);
+        const char *high_name = h != NULL && h->instance_id == alert.high_instance
+                                ? h->name : "?";
+        const char *low_name = l != NULL && l->instance_id == alert.low_instance
+                               ? l->name : "?";
+        const char *medium_name = m != NULL && m->instance_id == alert.medium_instance
+                                  ? m->name : "?";
+#if SENTINEL_TRACE
+        trace_probe_emit(EV_ALERT, alert.high_tid, alert.mutex_id,
+                         alert.duration_ms);
+#endif
+        kprintf("[ALERTA] INVERSION: alta=%s(tid %u,p%u) "
+                "baja=%s(tid %u,p%u) media=%s(tid %u,p%u) "
+                "mutex=%u duracion=%u ms bloqueo=%u ms\r\n",
+                high_name, (uint32_t)alert.high_tid,
+                (uint32_t)alert.high_priority, low_name,
+                (uint32_t)alert.low_tid, (uint32_t)alert.low_priority,
+                medium_name, (uint32_t)alert.medium_tid,
+                (uint32_t)alert.medium_priority, alert.mutex_id,
+                alert.duration_ms, alert.blocked_ms);
+    }
+    for (uint32_t tid = 0u; tid < MAX_TASKS; tid++) {
+        g_inversion_prev_instance[tid] = tasks[tid].instance;
+        g_inversion_prev_cpu[tid] = tasks[tid].cpu_cycles;
+    }
+}
+
+static void detector_check_jitter(void) {
+    uint32_t now = uptime_ms();
+    if ((int32_t)(now - g_next_jitter_due) < 0) {
+        return;
+    }
+    g_next_jitter_due = now + JITTER_PERIOD_MS;
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
+    g_stats.jitter_checks++;
+    if (jitter.samples < 64u ||
+        jitter.stddev_us <= g_jitter_threshold_us ||
+        (g_stats.jitter_alerts != 0u &&
+         now - g_jitter_last_alert_ms < JITTER_COOLDOWN_MS)) {
+        return;
+    }
+    g_jitter_last_alert_ms = now;
+    g_stats.jitter_alerts++;
+#if SENTINEL_TRACE
+    trace_probe_emit(EV_ALERT, 0u, jitter.stddev_us,
+                     g_jitter_threshold_us);
+#endif
+    kprintf("[ALERTA] JITTER: desviacion=%u us umbral=%u us "
+            "media=%u us min=%u us max=%u us muestras=%u\r\n",
+            jitter.stddev_us, g_jitter_threshold_us, jitter.mean_us,
+            jitter.min_us, jitter.max_us, jitter.samples);
+}
+
 static void detector_print_task(void *arg) {
     (void)arg;
     for (;;) {
@@ -213,12 +426,16 @@ static void detector_print_task(void *arg) {
                     starvation.wait_ms, g_starve_threshold_ms);
         }
         detector_check_fragmentation();
+        detector_check_inversion();
+        detector_check_jitter();
         task_sleep(DETECTOR_PRINT_POLL_MS);
     }
 }
 
 int detector_start(void) {
     g_next_frag_due = uptime_ms() + FRAG_PERIOD_MS;
+    g_next_inversion_due = uptime_ms() + INVERSION_PERIOD_MS;
+    g_next_jitter_due = uptime_ms() + JITTER_PERIOD_MS;
     int32_t tid = task_create("detector", detector_print_task, NULL, 2u, 0u);
     if (tid < 0) {
         return -1;
@@ -251,6 +468,12 @@ void detector_stats(detector_stats_t *out) {
     out->starve_alerts = g_stats.starve_alerts;
     out->starve_max_wait_ms = g_stats.starve_max_wait_ms;
     out->starve_threshold_ms = g_starve_threshold_ms;
+    out->inversion_checks = g_stats.inversion_checks;
+    out->inversion_alerts = g_stats.inversion_alerts;
+    out->inversion_max_ms = g_stats.inversion_max_ms;
+    out->jitter_checks = g_stats.jitter_checks;
+    out->jitter_alerts = g_stats.jitter_alerts;
+    out->jitter_threshold_us = g_jitter_threshold_us;
     irq_restore(ps);
 }
 
@@ -264,6 +487,17 @@ int detector_set_starve_threshold(uint32_t ms) {
         g_starve_latched_instance[tid] = 0u;
         g_starve_last_alert_ms[tid] = 0u;
     }
+    irq_restore(ps);
+    return 0;
+}
+
+int detector_set_jitter_threshold(uint32_t us) {
+    if (us < 1u || us > 1000u) {
+        return -1;
+    }
+    uint32_t ps = irq_save();
+    g_jitter_threshold_us = us;
+    g_jitter_last_alert_ms = uptime_ms() - JITTER_COOLDOWN_MS;
     irq_restore(ps);
     return 0;
 }

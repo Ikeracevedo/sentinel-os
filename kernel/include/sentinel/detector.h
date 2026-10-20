@@ -19,6 +19,12 @@ typedef struct {
     uint32_t starve_alerts;
     uint32_t starve_max_wait_ms;
     uint32_t starve_threshold_ms;
+    uint32_t inversion_checks;
+    uint32_t inversion_alerts;
+    uint32_t inversion_max_ms;
+    uint32_t jitter_checks;
+    uint32_t jitter_alerts;
+    uint32_t jitter_threshold_us;
 } detector_stats_t;
 
 /* Instala el chequeo de 500 ms en el tick y la tarea que imprime alertas. */
@@ -26,5 +32,7 @@ int detector_start(void);
 void detector_stats(detector_stats_t *out);
 /* Umbral para tareas READY (100..60000 ms); defecto 500 ms. */
 int detector_set_starve_threshold(uint32_t ms);
+/* Desviacion tipica de los ultimos 64 switches (1..1000 us); defecto 50 us. */
+int detector_set_jitter_threshold(uint32_t us);
 
 #endif

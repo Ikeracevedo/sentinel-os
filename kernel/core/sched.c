@@ -35,6 +35,10 @@ volatile uint32_t trace_switch_armed;
 volatile uint32_t trace_switch_ready;
 volatile uint32_t trace_switch_start;
 volatile uint32_t trace_switch_cycles;
+#define JITTER_WINDOW 64u
+static uint32_t g_jitter_us[JITTER_WINDOW];
+static uint32_t g_jitter_head;
+static uint32_t g_jitter_count;
 #if SENTINEL_TRACE
 static volatile uint8_t g_switch_in_tid;
 static volatile uint32_t g_switch_in_wait_ms;
@@ -72,6 +76,8 @@ void sched_init(void) {
 #endif
     trace_switch_armed = 0u;
     trace_switch_ready = 0u;
+    g_jitter_head = 0u;
+    g_jitter_count = 0u;
 #if SENTINEL_TRACE
     /* heap_stats recorre la arena: tomar la muestra desde una tarea, no desde el tick. */
     if (task_create("trace-heap", trace_heap_stats_task, NULL, 0u, 0u) < 0) {
@@ -224,6 +230,86 @@ static void note_switch_in(tcb_t *next) {
 
 uint32_t sched_stats_avg_cycles(void) {
     return g_stats_cost_count ? g_stats_cost_total / g_stats_cost_count : 0;
+}
+
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+/* Division entera por un divisor pequeno sin pedir __udivdi3 a libgcc. */
+static uint64_t jitter_div(uint64_t value, uint32_t divisor) {
+    uint64_t quotient = 0u;
+    uint32_t remainder = 0u;
+    for (int32_t bit = 63; bit >= 0; bit--) {
+        remainder = (remainder << 1) | (uint32_t)((value >> bit) & 1u);
+        if (remainder >= divisor) {
+            remainder -= divisor;
+            quotient |= (uint64_t)1u << bit;
+        }
+    }
+    return quotient;
+}
+
+static uint64_t jitter_square(uint32_t value) {
+    uint32_t low = value & 0xffffu;
+    uint32_t high = value >> 16;
+    return (uint64_t)(low * low) + ((uint64_t)(low * high) << 17) +
+           ((uint64_t)(high * high) << 32);
+}
+
+static uint32_t jitter_sqrt(uint64_t value) {
+    uint64_t root = 0u;
+    uint64_t bit = (uint64_t)1u << 62;
+    while (bit > value) {
+        bit >>= 2;
+    }
+    while (bit != 0u) {
+        if (value >= root + bit) {
+            value -= root + bit;
+            root = (root >> 1) + bit;
+        } else {
+            root >>= 1;
+        }
+        bit >>= 2;
+    }
+    return (uint32_t)root;
+}
+#endif
+
+void sched_jitter_snapshot(sched_jitter_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    *out = (sched_jitter_t){0};
+#if SENTINEL_TRACE || (defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH)
+    uint32_t samples[JITTER_WINDOW];
+    uint32_t ps = irq_save();
+    uint32_t count = g_jitter_count;
+    for (uint32_t i = 0u; i < count; i++) {
+        samples[i] = g_jitter_us[i];
+    }
+    irq_restore(ps);
+    if (count == 0u) {
+        return;
+    }
+    uint64_t sum = 0u;
+    uint64_t squares = 0u;
+    uint32_t minimum = UINT32_MAX;
+    uint32_t maximum = 0u;
+    for (uint32_t i = 0u; i < count; i++) {
+        uint32_t sample = samples[i];
+        if (sample < minimum) minimum = sample;
+        if (sample > maximum) maximum = sample;
+        sum += sample;
+        squares += jitter_square(sample);
+    }
+    uint32_t mean = (uint32_t)jitter_div(sum, count);
+    uint64_t mean_square = jitter_div(squares, count);
+    uint64_t square_mean = jitter_square(mean);
+    out->samples = count;
+    out->min_us = minimum;
+    out->max_us = maximum;
+    out->mean_us = mean;
+    out->stddev_us = jitter_sqrt(mean_square > square_mean
+                                ? mean_square - square_mean : 0u);
+#endif
 }
 
 uint32_t sched_recovered_stack_faults(void) {
@@ -416,6 +502,11 @@ uint32_t sched_dispatch(ctx_frame_t *frame) {
      * su duracion antes de que este despacho pueda emitir otro SWITCH_OUT. */
     if (trace_switch_ready != 0u) {
         uint32_t cycles = trace_switch_cycles;
+        g_jitter_us[g_jitter_head] = cycles / (CPU_FREQ_HZ / 1000000u);
+        g_jitter_head = (g_jitter_head + 1u) & (JITTER_WINDOW - 1u);
+        if (g_jitter_count < JITTER_WINDOW) {
+            g_jitter_count++;
+        }
 #if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
         g_bench_stats.full_count++;
         g_bench_stats.full_sum_cycles += cycles;

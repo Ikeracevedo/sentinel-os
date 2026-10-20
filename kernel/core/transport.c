@@ -71,8 +71,8 @@ static void send_stats(void) {
             switches += task->switches_in;
         }
     }
-    /* Los tres campos de duracion de switch se reservan hasta implementar
-     * una agregacion de muestras; cero significa "no disponible". */
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
     sys_stats_t s = {
         .uptime_ticks = (uint64_t)uptime_ms(),
         .heap_total = heap.total,
@@ -84,9 +84,9 @@ static void send_stats(void) {
         .events_emitted = trace_emitted(),
         .events_dropped = trace_dropped() + g_events_dropped,
         .switch_count = switches,
-        .switch_cycles_min = 0u,
-        .switch_cycles_max = 0u,
-        .switch_cycles_avg = 0u,
+        .switch_cycles_min = jitter.min_us * 40u,
+        .switch_cycles_max = jitter.max_us * 40u,
+        .switch_cycles_avg = jitter.mean_us * 40u,
         .task_count = tasks,
         .trace_enabled = trace_enabled,
         .cpu_idle_pct = (uint8_t)cpu_idle_percent(),

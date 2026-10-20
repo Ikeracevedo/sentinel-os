@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from e10_nominal_board import load_status, no_cycle, pathology_alerts
+from e10_nominal_board import load_status, no_cycle, pathology_alerts, jitter_metrics
 
 
 class NominalBoardOutputTests(unittest.TestCase):
@@ -23,6 +23,10 @@ class NominalBoardOutputTests(unittest.TestCase):
     def test_pathology_counters(self):
         text = "frag_alertas=0 inanicion_chequeos=60 inanicion_alertas=0\r\n"
         self.assertEqual(pathology_alerts(text), (0, 0))
+
+    def test_jitter_metrics(self):
+        text = "jitter: muestras=64 min=18 us max=31 us media=22 us desviacion=3 us\r\n"
+        self.assertEqual(jitter_metrics(text), (64, 18, 31, 22, 3))
 
 
 if __name__ == "__main__":

@@ -16,6 +16,16 @@ uint32_t cpu_idle_percent(void);
 /* Costo promedio (ciclos) de mantener las estadisticas en cada cambio de tarea. */
 uint32_t sched_stats_avg_cycles(void);
 
+/* Ultimos 64 cambios completos de contexto, en microsegundos. */
+typedef struct {
+    uint32_t samples;
+    uint32_t min_us;
+    uint32_t max_us;
+    uint32_t mean_us;
+    uint32_t stddev_us;
+} sched_jitter_t;
+void sched_jitter_snapshot(sched_jitter_t *out);
+
 /* Numero de tareas de prueba retiradas al detectar su canario de pila. */
 uint32_t sched_recovered_stack_faults(void);
 
