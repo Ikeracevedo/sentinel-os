@@ -8,8 +8,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from bridge import (Bridge, CycleClock, Decoder, EVENT, FRAME_EVENTS,
-                    FRAME_HELLO, FRAME_LOG, FRAME_STATS, STATS, SqliteSink,
+from bridge import (ALERT, Bridge, CycleClock, Decoder, EVENT, FRAME_ALERT,
+                    FRAME_EVENTS, FRAME_HELLO, FRAME_LOG, FRAME_STATS, STATS, SqliteSink,
                     crc16, encode_frame)
 
 
@@ -81,6 +81,42 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(conn.execute("SELECT COUNT(*) FROM eventos").fetchone()[0], 1)
                 self.assertEqual(conn.execute("SELECT notas FROM sesiones").fetchone()[0],
                                  "conexion a mitad de flujo")
+            finally:
+                conn.close()
+
+    def test_structured_alert_is_saved_in_sqlite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "sentinel.db")
+            bridge = Bridge([SqliteSink(db)])
+            payload = ALERT.pack(1, 2, 1, 0, 7, 1234, 4, 2, 9,
+                                 b"Ciclo de espera\x00".ljust(48, b"\x00"))
+            bridge.feed(encode_frame(FRAME_ALERT, 1, payload))
+            bridge.close()
+            conn = sqlite3.connect(db)
+            try:
+                row = conn.execute("""SELECT mensaje,seq,tiempo_ms,severidad,tipo,
+                    dato0,dato1,dato2 FROM alertas""").fetchone()
+                self.assertEqual(row[1:], (7, 1234, 2, 1, 4, 2, 9))
+                self.assertIn("CRIT DEADLOCK: Ciclo de espera", row[0])
+            finally:
+                conn.close()
+
+    def test_old_alert_table_is_migrated(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = str(Path(tmp) / "sentinel.db")
+            conn = sqlite3.connect(db)
+            conn.execute("CREATE TABLE alertas (id INTEGER PRIMARY KEY, "
+                         "sesion_id INTEGER, mensaje TEXT)")
+            conn.close()
+            bridge = Bridge([SqliteSink(db)])
+            bridge.feed(encode_frame(FRAME_ALERT, 1, b"alerta antigua"))
+            bridge.close()
+            conn = sqlite3.connect(db)
+            try:
+                self.assertEqual(conn.execute("SELECT mensaje FROM alertas")
+                                 .fetchone()[0], "alerta antigua")
+                self.assertIn("tiempo_ms", {row[1] for row in
+                              conn.execute("PRAGMA table_info(alertas)")})
             finally:
                 conn.close()
 

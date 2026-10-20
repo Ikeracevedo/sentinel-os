@@ -22,6 +22,7 @@ typedef struct {
     uint32_t inversion_checks;
     uint32_t inversion_alerts;
     uint32_t inversion_max_ms;
+    uint32_t inversion_active;
     uint32_t jitter_checks;
     uint32_t jitter_alerts;
     uint32_t jitter_threshold_us;

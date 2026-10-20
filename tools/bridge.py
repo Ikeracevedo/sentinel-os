@@ -31,6 +31,10 @@ TRACE_SAMPLE = 0x03
 EVENT = struct.Struct("<IBBHII")
 HEADER = struct.Struct("<BBHH")
 STATS = struct.Struct("<QIIIIHHIIIIIIBBBB")
+ALERT = struct.Struct("<BBBBIIIII48s")
+ALERT_SEVERITIES = ("INFO", "WARN", "CRIT")
+ALERT_TYPES = {1: "DEADLOCK", 2: "FRAGMENTACION", 3: "INANICION",
+               4: "INVERSION", 5: "JITTER"}
 
 
 def crc16(data: bytes) -> int:
@@ -192,11 +196,18 @@ class SqliteSink(Sink):
                 cpu_idle_pct INTEGER);
             CREATE TABLE IF NOT EXISTS alertas (
                 id INTEGER PRIMARY KEY, sesion_id INTEGER REFERENCES sesiones(id),
-                mensaje TEXT);
+                mensaje TEXT, seq INTEGER, tiempo_ms INTEGER, severidad INTEGER,
+                tipo INTEGER, dato0 INTEGER, dato1 INTEGER, dato2 INTEGER);
             CREATE TABLE IF NOT EXISTS tareas (
                 sesion_id INTEGER REFERENCES sesiones(id), tid INTEGER,
                 nombre TEXT, PRIMARY KEY(sesion_id,tid));
         """)
+        # Bases creadas antes de E10 conservan la tabla con solo mensaje.
+        existing = {row[1] for row in self.db.execute("PRAGMA table_info(alertas)")}
+        for column in ("seq", "tiempo_ms", "severidad", "tipo",
+                       "dato0", "dato1", "dato2"):
+            if column not in existing:
+                self.db.execute(f"ALTER TABLE alertas ADD COLUMN {column} INTEGER")
         self.session: int | None = None
         self.pending: list[tuple] = []
 
@@ -235,8 +246,13 @@ class SqliteSink(Sink):
                  data["cpu_idle_pct"]))
         elif kind == "alert":
             self._ensure_session()
-            self.db.execute("INSERT INTO alertas(sesion_id,mensaje) VALUES(?,?)",
-                            (self.session, data["text"]))
+            self.db.execute("""INSERT INTO alertas
+                (sesion_id,mensaje,seq,tiempo_ms,severidad,tipo,dato0,dato1,dato2)
+                VALUES(?,?,?,?,?,?,?,?,?)""",
+                (self.session, data["text"], data.get("sequence"),
+                 data.get("timestamp_ms"), data.get("severity"),
+                 data.get("type"), data.get("data0"), data.get("data1"),
+                 data.get("data2")))
 
     def flush(self) -> None:
         if self.pending:
@@ -305,6 +321,19 @@ class Bridge:
                 self.dropped_device = max(self.dropped_device,
                                           data["events_dropped"])
                 self.publish("stats", data)
+            elif frame.kind == FRAME_ALERT and len(p) == ALERT.size and p[0] == 1:
+                version, severity, alert_type, _reserved, sequence, timestamp_ms, \
+                    data0, data1, data2, message = ALERT.unpack(p)
+                label = (ALERT_SEVERITIES[severity]
+                         if severity < len(ALERT_SEVERITIES) else "?")
+                kind_name = ALERT_TYPES.get(alert_type, "?")
+                message_text = message.split(b"\x00", 1)[0].decode("ascii", "replace")
+                self.publish("alert", {"text": f"#{sequence} t={timestamp_ms} ms "
+                             f"{label} {kind_name}: {message_text} "
+                             f"datos={data0},{data1},{data2}",
+                             "sequence": sequence, "timestamp_ms": timestamp_ms,
+                             "severity": severity, "type": alert_type,
+                             "data0": data0, "data1": data1, "data2": data2})
             elif frame.kind in (FRAME_LOG, FRAME_ALERT):
                 text = p.decode("ascii", "replace")
                 if frame.kind == FRAME_LOG:

@@ -7,6 +7,23 @@
 #define FRAME_MAX_PAYLOAD 512u
 #define FRAME_OVERHEAD     10u
 #define FRAME_MAX_BYTES   (FRAME_MAX_PAYLOAD + FRAME_OVERHEAD)
+#define FRAME_ALERT_VERSION 1u
+#define FRAME_ALERT_MESSAGE_SIZE 48u
+
+/* FRAME_ALERT v1: campos enteros little-endian y mensaje ASCII terminado en 0. */
+typedef struct __attribute__((packed)) {
+    uint8_t version;
+    uint8_t severity;
+    uint8_t type;
+    uint8_t reserved;
+    uint32_t sequence;
+    uint32_t timestamp_ms;
+    uint32_t data[3];
+    char message[FRAME_ALERT_MESSAGE_SIZE];
+} frame_alert_payload_t;
+
+_Static_assert(sizeof(frame_alert_payload_t) == 72u,
+               "FRAME_ALERT v1 debe medir 72 B");
 
 enum {
     FRAME_EVENTS    = 0x01,

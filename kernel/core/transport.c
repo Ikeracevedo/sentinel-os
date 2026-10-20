@@ -3,6 +3,7 @@
 #include <sentinel/trace.h>
 #include <sentinel/task.h>
 #include <sentinel/heap.h>
+#include <sentinel/alerts.h>
 #include "../drivers/uart.h"
 #include "sched.h"
 #include "time.h"
@@ -95,11 +96,42 @@ static void send_stats(void) {
     (void)send_frame(FRAME_STATS, (const uint8_t *)&s, sizeof(s));
 }
 
+static void send_alerts(uint32_t *last_sequence) {
+    for (uint32_t batch = 0u; batch < 4u; batch++) {
+        if (uart_frame_free() < sizeof(frame_alert_payload_t) +
+                                FRAME_OVERHEAD + 100u) {
+            break;
+        }
+        alert_t alert;
+        if (!alerts_next(*last_sequence, &alert)) {
+            break;
+        }
+        frame_alert_payload_t payload = {
+            .version = FRAME_ALERT_VERSION,
+            .severity = alert.severity,
+            .type = alert.type,
+            .reserved = 0u,
+            .sequence = alert.sequence,
+            .timestamp_ms = alert.timestamp_ms,
+            .data = {alert.data[0], alert.data[1], alert.data[2]}
+        };
+        for (uint32_t i = 0u; i < FRAME_ALERT_MESSAGE_SIZE; i++) {
+            payload.message[i] = alert.message[i];
+        }
+        if (!send_frame(FRAME_ALERT, (const uint8_t *)&payload,
+                        sizeof(payload))) {
+            break;
+        }
+        *last_sequence = alert.sequence;
+    }
+}
+
 static void tracer_task(void *arg) {
     (void)arg;
     send_hello();
     uint32_t next_heartbeat = uptime_ms() + 100u;
     uint32_t next_stats = uptime_ms() + 1000u;
+    uint32_t last_alert_sequence = 0u;
 
     for (;;) {
         uint32_t now = uptime_ms();
@@ -111,6 +143,8 @@ static void tracer_task(void *arg) {
             send_stats();
             next_stats += 1000u;
         }
+
+        send_alerts(&last_alert_sequence);
 
         /* El shell solo escribe en una cola de texto. Una unica tarea crea
          * todas las tramas, de modo que los bytes de LOG y EVENTS no se mezclan. */

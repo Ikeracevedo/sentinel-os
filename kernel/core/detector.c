@@ -8,6 +8,7 @@
 #include <sentinel/heap.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
+#include <sentinel/alerts.h>
 #include "sched.h"
 #include "time.h"
 #include "../arch/xtensa/cpu.h"
@@ -192,6 +193,10 @@ static void detector_check_fragmentation(void) {
 
     if (level > g_frag_level) {
         g_stats.frag_alerts++;
+        (void)alerts_record(now, level == 2u ? ALERT_CRIT : ALERT_WARN,
+                            ALERT_FRAGMENTATION, level,
+                            "Fragmentacion del heap", percent, heap.free,
+                            heap.largest_free_block);
 #if SENTINEL_TRACE
         trace_probe_emit(EV_ALERT, 0u, percent, heap.largest_free_block);
 #endif
@@ -251,6 +256,7 @@ static void detector_check_inversion(void) {
     inversion_task_t tasks[MAX_TASKS];
     inversion_snapshot(tasks);
     g_stats.inversion_checks++;
+    uint32_t active = 0u;
 
     for (uint32_t high_tid = 1u; high_tid < MAX_TASKS; high_tid++) {
         inversion_task_t *high = &tasks[high_tid];
@@ -284,6 +290,7 @@ static void detector_check_inversion(void) {
             g_inversion_started_ms[high_tid] = 0u;
             continue;
         }
+        active = 1u;
         if (g_inversion_high_instance[high_tid] != high->instance ||
             g_inversion_owner_instance[high_tid] != low->instance ||
             g_inversion_mutex_id[high_tid] != high->mutex_id) {
@@ -308,6 +315,11 @@ static void detector_check_inversion(void) {
         }
         g_inversion_last_alert_ms[high_tid] = now;
         g_stats.inversion_alerts++;
+        (void)alerts_record(now, ALERT_WARN, ALERT_INVERSION,
+                            (high_tid << 16) | (low_tid << 8) | medium_tid,
+                            "Inversion de prioridad",
+                            (high_tid << 16) | (low_tid << 8) | medium_tid,
+                            duration, high->mutex_id);
         inversion_alert_t alert = {
             .high_tid = (uint8_t)high_tid, .low_tid = (uint8_t)low_tid,
             .medium_tid = (uint8_t)medium_tid,
@@ -345,6 +357,7 @@ static void detector_check_inversion(void) {
         g_inversion_prev_instance[tid] = tasks[tid].instance;
         g_inversion_prev_cpu[tid] = tasks[tid].cpu_cycles;
     }
+    g_stats.inversion_active = active;
 }
 
 static void detector_check_jitter(void) {
@@ -364,6 +377,9 @@ static void detector_check_jitter(void) {
     }
     g_jitter_last_alert_ms = now;
     g_stats.jitter_alerts++;
+    (void)alerts_record(now, ALERT_WARN, ALERT_JITTER, 0u,
+                        "Jitter de switch", jitter.stddev_us,
+                        g_jitter_threshold_us, jitter.mean_us);
 #if SENTINEL_TRACE
     trace_probe_emit(EV_ALERT, 0u, jitter.stddev_us,
                      g_jitter_threshold_us);
@@ -392,6 +408,11 @@ static void detector_print_task(void *arg) {
         }
         irq_restore(ps);
         if (ready) {
+            (void)alerts_record(uptime_ms(), ALERT_CRIT, ALERT_DEADLOCK,
+                                ((uint32_t)alert.cycle.tid[0] << 8) |
+                                alert.cycle.count, "Ciclo de espera",
+                                alert.cycle.tid[0], alert.cycle.count,
+                                alert.mutex_id[0]);
 #if SENTINEL_TRACE
             for (uint32_t i = 0; i < alert.cycle.count; i++) {
                 trace_probe_emit(EV_ALERT, alert.cycle.tid[i], alert.mutex_id[i],
@@ -412,6 +433,11 @@ static void detector_print_task(void *arg) {
                     (uint32_t)first);
         }
         if (starve_ready) {
+            (void)alerts_record(uptime_ms(), ALERT_WARN, ALERT_STARVATION,
+                                (starvation.instance_id << 8) |
+                                starvation.tid,
+                                "Tarea lista sin CPU", starvation.tid,
+                                starvation.wait_ms, starvation.priority);
             tcb_t *t = task_get(starvation.tid);
             const char *name = (t != NULL &&
                                 t->instance_id == starvation.instance_id)
@@ -471,6 +497,7 @@ void detector_stats(detector_stats_t *out) {
     out->inversion_checks = g_stats.inversion_checks;
     out->inversion_alerts = g_stats.inversion_alerts;
     out->inversion_max_ms = g_stats.inversion_max_ms;
+    out->inversion_active = g_stats.inversion_active;
     out->jitter_checks = g_stats.jitter_checks;
     out->jitter_alerts = g_stats.jitter_alerts;
     out->jitter_threshold_us = g_jitter_threshold_us;
