@@ -8,8 +8,14 @@
 #include <sentinel/heap.h>
 #include <sentinel/task.h>
 #include <sentinel/sync.h>
+#include <sentinel/graph.h>
+#include <sentinel/detector.h>
+#include <sentinel/alerts.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
+#if SENTINEL_TRANSPORT
+#include <sentinel/transport.h>
+#endif
 #include "../drivers/uart.h"
 #include "../drivers/gpio.h"
 #include "../core/sched.h"
@@ -327,6 +333,179 @@ static int cmd_sync(int argc, char **argv) {
     return 0;
 }
 
+static int cmd_graph(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+    graph_dump();
+    return 0;
+}
+
+static int cmd_deadlock(int argc, char **argv) {
+    (void)argv;
+    if (argc != 1) {
+        shell_print_error("deadlock", "uso: deadlock", NULL);
+        return 1;
+    }
+    graph_t graph;
+    graph_cycle_t cycle;
+    uint32_t capture_cycles = graph_build(&graph);
+    if (!graph_find_cycle(&graph, &cycle)) {
+        kprintf("deadlock: sin ciclo; captura=%u ciclos\r\n", capture_cycles);
+        return 0;
+    }
+    kprintf("deadlock: ciclo=");
+    for (uint32_t i = 0u; i < cycle.count; i++) {
+        kprintf("%u -> ", (uint32_t)cycle.tid[i]);
+    }
+    kprintf("%u; tareas=%u captura=%u ciclos\r\n",
+            (uint32_t)cycle.tid[0], (uint32_t)cycle.count,
+            capture_cycles);
+    return 0;
+}
+
+static int cmd_detector(int argc, char **argv) {
+    if (argc != 1) {
+        uint32_t threshold;
+        if (argc != 3 || shell_parse_uint(argv[2], &threshold) != 0 ||
+            !(str_eq(argv[1], "starve")
+              ? detector_set_starve_threshold(threshold) == 0
+              : str_eq(argv[1], "jitter") &&
+                detector_set_jitter_threshold(threshold) == 0)) {
+            shell_print_error("detector", "uso: detector [starve <100..60000 ms>|jitter <1..1000 us>]", NULL);
+            return 1;
+        }
+    }
+    detector_stats_t stats;
+    detector_stats(&stats);
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
+    kprintf("detector: chequeos=%u alertas=%u ultimo=%u ciclos (%u us) "
+            "maximo=%u ciclos (%u us) grafo_max=%u ciclos "
+            "dfs_max=%u ciclos frag_chequeos=%u frag_alertas=%u "
+            "frag=%u%% libre=%u mayor=%u "
+            "inanicion_chequeos=%u inanicion_alertas=%u "
+            "espera_max=%u ms umbral=%u ms "
+            "inversion_chequeos=%u inversion_alertas=%u "
+            "inversion_max=%u ms "
+            "jitter_chequeos=%u jitter_alertas=%u jitter_umbral=%u us\r\n",
+            stats.runs, stats.alerts, stats.last_cycles,
+            cycles_to_us(stats.last_cycles), stats.max_cycles,
+            cycles_to_us(stats.max_cycles), stats.max_graph_cycles,
+            stats.max_dfs_cycles, stats.frag_checks, stats.frag_alerts,
+            stats.frag_percent, stats.frag_free, stats.frag_largest,
+            stats.starve_checks, stats.starve_alerts,
+            stats.starve_max_wait_ms, stats.starve_threshold_ms,
+            stats.inversion_checks, stats.inversion_alerts,
+            stats.inversion_max_ms, stats.jitter_checks,
+            stats.jitter_alerts, stats.jitter_threshold_us);
+    kprintf("jitter: muestras=%u min=%u us max=%u us media=%u us "
+            "desviacion=%u us\r\n", jitter.samples, jitter.min_us,
+            jitter.max_us, jitter.mean_us, jitter.stddev_us);
+    return 0;
+}
+
+static int cmd_alerts(int argc, char **argv) {
+    if (argc == 2 && str_eq(argv[1], "-c")) {
+        alerts_clear();
+        kprintf("alerts: registro limpio\r\n");
+        return 0;
+    }
+    if (argc != 1) {
+        shell_print_error("alerts", "uso: alerts [-c]", NULL);
+        return 1;
+    }
+    uint32_t count = alerts_count();
+    kprintf("alerts: %u recientes\r\n", count);
+    for (uint32_t i = 0u; i < count; i++) {
+        alert_t alert;
+        if (!alerts_get(i, &alert)) {
+            break;
+        }
+        kprintf("#%u t=%u ms %s %s: %s datos=%u,%u,%u\r\n",
+                alert.sequence, alert.timestamp_ms,
+                alerts_severity_name(alert.severity),
+                alerts_type_name(alert.type), alert.message,
+                alert.data[0], alert.data[1], alert.data[2]);
+    }
+    return 0;
+}
+
+static int cmd_health(int argc, char **argv) {
+    (void)argv;
+    if (argc != 1) {
+        shell_print_error("health", "uso: health", NULL);
+        return 1;
+    }
+    detector_stats_t stats;
+    detector_stats(&stats);
+    graph_t graph;
+    graph_cycle_t cycle;
+    (void)graph_build(&graph);
+    int has_cycle = graph_find_cycle(&graph, &cycle);
+    kprintf("health: deadlocks %s; ciclo=%u tareas\r\n",
+            has_cycle ? "CRIT" : "OK",
+            has_cycle ? (uint32_t)cycle.count : 0u);
+
+    heap_stats_t heap;
+    heap_stats(&heap);
+    uint32_t frag = heap_frag_percent(&heap);
+    kprintf("health: fragmentacion %s; frag=%u%% libre=%u B mayor=%u B\r\n",
+            frag > 60u ? "CRIT" : frag > 30u ? "WARN" : "OK",
+            frag, heap.free, heap.largest_free_block);
+
+    uint32_t now = uptime_ms();
+    uint32_t max_ready = 0u;
+    uint32_t ps = irq_save();
+    for (uint32_t tid = 1u; tid < MAX_TASKS; tid++) {
+        tcb_t *task = task_get(tid);
+        if (task != NULL && task->state == TASK_READY) {
+            uint32_t wait = now - task->ready_since;
+            if (wait > max_ready) {
+                max_ready = wait;
+            }
+        }
+    }
+    irq_restore(ps);
+    kprintf("health: inanicion %s; espera_actual=%u ms umbral=%u ms\r\n",
+            max_ready > stats.starve_threshold_ms ? "WARN" : "OK",
+            max_ready, stats.starve_threshold_ms);
+    kprintf("health: inversion de prioridad %s; alertas_historicas=%u\r\n",
+            stats.inversion_active ? "WARN" : "OK",
+            stats.inversion_alerts);
+
+    sched_jitter_t jitter;
+    sched_jitter_snapshot(&jitter);
+    if (jitter.samples == 0u) {
+        kprintf("health: jitter de switch SIN DATOS (TRACE desactivado)\r\n");
+    } else {
+        kprintf("health: jitter de switch %s; muestras=%u min=%u us max=%u us "
+                "media=%u us desviacion=%u us umbral=%u us\r\n",
+                jitter.stddev_us > stats.jitter_threshold_us ? "ALERTA" : "OK",
+                jitter.samples, jitter.min_us, jitter.max_us,
+                jitter.mean_us, jitter.stddev_us, stats.jitter_threshold_us);
+    }
+
+    uint32_t lost_events = 0u;
+    uint32_t lost_frames = 0u;
+#if SENTINEL_TRACE
+    lost_events = trace_dropped();
+#endif
+#if SENTINEL_TRANSPORT
+    lost_events += transport_events_dropped();
+    lost_frames = transport_frames_dropped();
+#endif
+    kprintf("health: eventos perdidos %s; eventos=%u tramas=%u\r\n",
+            lost_events != 0u || lost_frames != 0u ? "WARN" : "OK",
+            lost_events, lost_frames);
+    uint32_t free_percent = heap.total != 0u
+                            ? heap.free * 100u / heap.total : 0u;
+    kprintf("health: heap libre %s; libre=%u B (%u%%)\r\n",
+            free_percent < 10u ? "CRIT" :
+            free_percent < 20u ? "WARN" : "OK",
+            heap.free, free_percent);
+    return 0;
+}
+
 static int cmd_help(int argc, char **argv) {
     if (argc >= 2) {
         for (uint32_t i = 0; i < shell_cmd_count(); i++) {
@@ -619,6 +798,11 @@ void shell_register_builtins(void) {
     cmd_register("ps",      cmd_ps,      "lista las tareas", "ps [-v] [nombre]");
     cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]   (-v: mapa del heap)");
     cmd_register("sync",    cmd_sync,    "muestra propietarios y esperas de mutex", "sync");
+    cmd_register("graph",   cmd_graph,   "muestra aristas del grafo de espera", "graph");
+    cmd_register("deadlock", cmd_deadlock, "comprueba un ciclo de espera ahora", "deadlock");
+    cmd_register("detector", cmd_detector, "muestra el coste y las alertas del detector", "detector [starve <100..60000 ms>|jitter <1..1000 us>]");
+    cmd_register("alerts", cmd_alerts, "lista o limpia las ultimas 32 alertas", "alerts [-c]");
+    cmd_register("health", cmd_health, "resume la salud de cada categoria", "health");
     cmd_register("uptime",  cmd_uptime,  "tiempo desde el arranque", "uptime");
     cmd_register("uname",   cmd_uname,   "informacion del sistema", "uname [-a]");
     cmd_register("clear",   cmd_clear,   "limpia la pantalla", "clear");
