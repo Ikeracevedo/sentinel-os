@@ -1,7 +1,7 @@
 """Carga nominal de E10 con vigilancia continua y parada recuperable.
 
 Prueba corta: py tools/e10_nominal_board.py --port COM8 --duration 30
-Criterio HU-E10-02: py tools/e10_nominal_board.py --port COM8 --duration 3600
+Observacion de una hora: py tools/e10_nominal_board.py --port COM8 --duration 3600
 """
 
 from __future__ import annotations
@@ -36,6 +36,14 @@ def load_status(output: str) -> tuple[int, int, int]:
     return tuple(map(int, match.groups()))
 
 
+def pathology_alerts(output: str) -> tuple[int, int]:
+    frag = re.search(r"frag_alertas=(\d+)", output)
+    starve = re.search(r"inanicion_alertas=(\d+)", output)
+    if frag is None or starve is None:
+        raise RuntimeError(f"contadores de patologias incompletos: {output!r}")
+    return int(frag.group(1)), int(starve.group(1))
+
+
 def no_cycle(output: str) -> None:
     edges, cycles = edges_and_cycles(output)
     if "sin ciclos" not in output or cycles >= 2000:
@@ -49,7 +57,7 @@ def main() -> int:
     parser.add_argument("--port", required=True)
     parser.add_argument("--baud", type=int, default=921600)
     parser.add_argument("--duration", type=int, default=3600,
-                        help="segundos de carga; 3600 para cumplir HU-E10-02")
+                        help="segundos de carga; 3600 para observar una hora")
     args = parser.parse_args()
     if args.duration < 1:
         parser.error("--duration debe ser positivo")
@@ -68,7 +76,9 @@ def main() -> int:
             raise RuntimeError("hay un escenario activo antes de comenzar")
         before = heap_state(board.command("free"))
         no_cycle(board.command("graph"))
-        runs_before, alerts_before, _ = detector_state(board.command("detector"))
+        detector_before = board.command("detector")
+        runs_before, alerts_before, _ = detector_state(detector_before)
+        pathologies_before = pathology_alerts(detector_before)
         if runs_before == 0:
             raise RuntimeError("detector sin chequeos periodicos")
         print(f"base: heap libre={before[0]} B, bloques={before[1]}; "
@@ -99,8 +109,11 @@ def main() -> int:
                     raise RuntimeError(f"carga sin avance o con fallos: {status!r}")
                 previous_iterations = iterations
                 no_cycle(board.command("graph"))
-                runs, alerts, max_cycles = detector_state(board.command("detector"))
-                if alerts != alerts_before or max_cycles >= 4000:
+                detector_text = board.command("detector")
+                runs, alerts, max_cycles = detector_state(detector_text)
+                if (alerts != alerts_before or
+                        pathology_alerts(detector_text) != pathologies_before or
+                        max_cycles >= 4000):
                     raise RuntimeError("falsa alerta o coste >100 us: "
                                        f"chequeos={runs}, alertas={alerts}, "
                                        f"maximo={max_cycles} ciclos")
@@ -115,10 +128,12 @@ def main() -> int:
             # Comprobacion final aunque el ultimo intervalo no termine en
             # un minuto exacto.
             _, iterations, alloc_failures = load_status(board.command("inject status"))
-            runs, alerts, max_cycles = detector_state(board.command("detector"))
+            detector_text = board.command("detector")
+            runs, alerts, max_cycles = detector_state(detector_text)
             no_cycle(board.command("graph"))
             if (iterations == 0 or iterations < previous_iterations or
                     alloc_failures != 0 or alerts != alerts_before or
+                    pathology_alerts(detector_text) != pathologies_before or
                     max_cycles >= 4000 or observed.event_alerts or
                     observed.frame_alerts):
                 raise RuntimeError("condiciones nominales no cumplidas al final")
@@ -152,11 +167,8 @@ def main() -> int:
         print(board.bridge.report(), flush=True)
         if failure is not None:
             raise failure
-        if args.duration < 3600:
-            print("ENSAYO CORTO: aun falta 1 hora para cerrar HU-E10-02",
-                  flush=True)
-        else:
-            print("OK: una hora nominal sin falsos positivos", flush=True)
+        print(f"OK: {args.duration} s nominales sin falsos positivos de "
+              "deadlock, fragmentacion ni inanicion", flush=True)
         return 0
     finally:
         board.close()

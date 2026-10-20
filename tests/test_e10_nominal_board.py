@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from e10_nominal_board import load_status, no_cycle
+from e10_nominal_board import load_status, no_cycle, pathology_alerts
 
 
 class NominalBoardOutputTests(unittest.TestCase):
@@ -19,6 +19,10 @@ class NominalBoardOutputTests(unittest.TestCase):
         text = ("grafo de espera (tid -> tid):\r\n  5 -> 6\r\n"
                 "sin ciclos\r\naristas=1 captura=980 ciclos\r\n")
         no_cycle(text)
+
+    def test_pathology_counters(self):
+        text = "frag_alertas=0 inanicion_chequeos=60 inanicion_alertas=0\r\n"
+        self.assertEqual(pathology_alerts(text), (0, 0))
 
 
 if __name__ == "__main__":

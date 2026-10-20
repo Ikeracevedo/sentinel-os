@@ -1,4 +1,5 @@
 PREFIX   := xtensa-esp32-elf-
+.DEFAULT_GOAL := all
 CC       := $(PREFIX)gcc
 SIZE     := $(PREFIX)size
 ESPTOOL  := esptool.py
@@ -143,6 +144,8 @@ test:
 	python3 -m unittest discover -s tests -p test_bridge.py
 	python3 -m unittest discover -s tests -p test_e10_graph_board.py
 	python3 -m unittest discover -s tests -p test_e10_nominal_board.py
+	python3 -m unittest discover -s tests -p test_e10_frag_board.py
+	python3 -m unittest discover -s tests -p test_e10_hog_board.py
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST tests/test_heap.c kernel/mm/heap.c -o $(BUILD)/test_heap
 	./$(BUILD)/test_heap
 	$(HOSTCC) $(HOSTFLAGS) -DHEAP_HOST -DVFS_HOST tests/test_vfs.c kernel/fs/vfs.c kernel/mm/heap.c -o $(BUILD)/test_vfs

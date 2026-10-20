@@ -17,7 +17,10 @@ tcb_t *task_get(uint32_t tid) {
     return (tid < MAX_TASKS && tasks[tid].state != TASK_UNUSED) ? &tasks[tid] : NULL;
 }
 
-uint32_t graph_host_cycles(void) { return ++clock_cycles; }
+uint32_t graph_host_cycles(void) {
+    assert(irq_depth == 1u);
+    return ++clock_cycles;
+}
 uint32_t graph_host_irq_save(void) {
     assert(irq_depth == 0u);
     irq_depth = 1u;

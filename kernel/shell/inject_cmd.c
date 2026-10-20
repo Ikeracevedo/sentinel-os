@@ -21,6 +21,8 @@
 #define FRAG_MAX_BLOCKS 64u
 #define FRAG_HOLD_MS 30000u
 #define HOG_RUN_MS 100u
+#define HOG_STARVE_RUN_MS 1200u
+#define HOG_STARVE_REST_MS 100u
 #define HOG_REST_MS 2u
 #define HOG_MAX_MS 20000u
 #define PRIO_INV_LOW_WORK_CYCLES CPU_FREQ_HZ
@@ -183,11 +185,11 @@ static void hog_task(void *arg) {
         uint32_t slice = uptime_ms();
         /* Bucle de CPU real, no una tarea que simplemente duerme. La pausa
          * breve permite que el shell y el tracer transmitan inject stop. */
-        while ((uint32_t)(uptime_ms() - slice) < HOG_RUN_MS &&
+        while ((uint32_t)(uptime_ms() - slice) < HOG_STARVE_RUN_MS &&
                (uint32_t)(uptime_ms() - started) < HOG_MAX_MS) {
             __asm__ __volatile__("" ::: "memory");
         }
-        task_sleep(HOG_REST_MS);
+        task_sleep(HOG_STARVE_REST_MS);
     }
     g_hog_expired = 1u;
     kprintf("inject hog: limite de %u ms alcanzado; tarea terminada\r\n", HOG_MAX_MS);
@@ -211,7 +213,7 @@ static int start_hog(scenario_t *scenario, int argc, char **argv) {
     scenario->task_names[0] = "hog";
     scenario->count = 1u;
     kprintf("inject hog: tarea tid=%u prioridad=%u; pausa %u ms cada %u ms; limite %u ms\r\n",
-            (uint32_t)tid, priority, HOG_REST_MS, HOG_RUN_MS, HOG_MAX_MS);
+            (uint32_t)tid, priority, HOG_STARVE_REST_MS, HOG_STARVE_RUN_MS, HOG_MAX_MS);
     return 0;
 }
 

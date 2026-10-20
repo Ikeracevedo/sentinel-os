@@ -21,8 +21,8 @@ uint32_t graph_build(graph_t *out) {
     if (out == NULL) {
         return 0u;
     }
-    uint32_t started = graph_cycles();
     uint32_t saved = graph_irq_save();
+    uint32_t started = graph_cycles();
 
     /* Borrar 64 palabras de 32 bits evita 256 escrituras byte a byte.
      * La union conserva la matriz visible de 16x16 y sus 256 bytes. */
@@ -53,8 +53,9 @@ uint32_t graph_build(graph_t *out) {
         }
     }
 
+    uint32_t capture_cycles = graph_cycles() - started;
     graph_irq_restore(saved);
-    return graph_cycles() - started;
+    return capture_cycles;
 }
 
 int graph_find_cycle(const graph_t *graph, graph_cycle_t *out) {
