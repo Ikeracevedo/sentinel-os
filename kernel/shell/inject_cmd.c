@@ -7,6 +7,9 @@
 #include <sentinel/sync.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+#include <sentinel/inject_bench.h>
+#endif
 #include "../core/sched.h"
 #include "../core/time.h"
 #include "../arch/xtensa/cpu.h"
@@ -829,3 +832,29 @@ void inject_register_command(void) {
     cmd_register("inject", cmd_inject, "activa y detiene fallos controlados",
                  "inject list|status|stop [escenario]|<escenario> [parametros]");
 }
+
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+/* El banco E11 llama al mismo camino que el shell. Asi configuracion,
+ * trabajadores, contador y limpieza son identicos a inject load nominal. */
+int inject_nominal_bench_start(void) {
+    char *argv[] = {"inject", "load", "nominal"};
+    return cmd_inject(3, argv);
+}
+
+int inject_nominal_bench_stop(void) {
+    char *argv[] = {"inject", "stop", "load"};
+    return cmd_inject(3, argv);
+}
+
+uint32_t inject_nominal_bench_iterations(void) {
+    uint32_t total = 0u;
+    for (uint32_t i = 0u; i < 5u; i++) {
+        total += g_load_iterations[i];
+    }
+    return total;
+}
+
+uint32_t inject_nominal_bench_alloc_failures(void) {
+    return g_load_alloc_failures;
+}
+#endif

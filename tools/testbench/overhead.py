@@ -36,9 +36,12 @@ CSV_FIELDS = ("session", "timestamp_utc", "commit", "git_dirty", "variant",
                                           if key not in ("trace", "run")))
 
 
-def parse_line(line: str) -> tuple[str, dict[str, int]] | None:
-    for label, regex, fields in (("row", ROW_RE, FIELDS),
-                                  ("full", FULL_RE, FULL_FIELDS)):
+def parse_line(line: str, profile: str = "overhead-standard") -> tuple[str, dict[str, int]] | None:
+    prefix = "TRACE_NOMINAL" if profile == "nominal" else "TRACE_OVERHEAD"
+    row_re = pattern(prefix + ":", FIELDS)
+    full_re = pattern(prefix + "_FULL:", FULL_FIELDS)
+    for label, regex, fields in (("row", row_re, FIELDS),
+                                  ("full", full_re, FULL_FIELDS)):
         match = regex.search(line)
         if match:
             return label, dict(zip(fields, map(int, match.groups())))
@@ -47,21 +50,23 @@ def parse_line(line: str) -> tuple[str, dict[str, int]] | None:
 
 def validate(rows: dict[int, dict[str, int]],
              full: dict[int, dict[str, int]], variant: str,
-             done: bool) -> list[dict[str, int]]:
+             done: bool, runs: int = 5, duration_ms: int = 60000) -> list[dict[str, int]]:
     expected = int(variant == "trace-on")
-    if not done or set(rows) != set(range(1, 6)) or set(full) != set(range(1, 6)):
+    if not done or set(rows) != set(range(1, runs + 1)) or set(full) != set(range(1, runs + 1)):
         raise RuntimeError(f"captura incompleta: resumen={sorted(rows)}, "
                            f"completo={sorted(full)}, fin={done}")
     result = []
-    for run in range(1, 6):
+    for run in range(1, runs + 1):
         row, detail = rows[run], full[run]
         if (row["trace"] != expected or detail["trace"] != expected or
-                row["run"] != detail["run"] or row["ms"] != 60_000 or
-                not 2_200_000_000 <= row["elapsed"] <= 2_600_000_000 or
+                row["run"] != detail["run"] or row["ms"] != duration_ms or
+                not 0.9 * duration_ms * 40000 <= row["elapsed"] <=
+                1.1 * duration_ms * 40000 or
                 row["idle"] > row["elapsed"] or row["switches"] == 0 or
                 detail["switches"] == 0 or
                 abs(detail["switches"] - row["switches"]) > 2 or
-                row["ops"] < 1000 or row["errors"] != 0 or
+                row["ops"] < (duration_ms // 100 if duration_ms < 60000 else 1000) or
+                row["errors"] != 0 or
                 (expected == 0 and row["emitted"] != 0) or
                 (expected == 1 and row["emitted"] == 0)):
             raise RuntimeError(f"corrida {run} invalida: {row}; {detail}")
@@ -72,12 +77,14 @@ def validate(rows: dict[int, dict[str, int]],
 
 
 def capture(port_name: str, baud: int, variant: str, output: Path,
-            timeout: float) -> list[dict[str, int]]:
+            timeout: float, profile: str = "overhead-standard",
+            runs: int = 5, duration_ms: int = 60000) -> list[dict[str, int]]:
     import serial
 
     output.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    prefix = output / f"overhead_{stamp}_{variant}"
+    prefix = output / f"{'nominal_' if profile == 'nominal' else ''}overhead_{stamp}_{variant}"
+    label = "TRACE_NOMINAL" if profile == "nominal" else "TRACE_OVERHEAD"
     print(f"Capturando {variant} en {port_name}; crudo={prefix}.uart", flush=True)
     rows: dict[int, dict[str, int]] = {}
     full: dict[int, dict[str, int]] = {}
@@ -112,7 +119,7 @@ def capture(port_name: str, baud: int, variant: str, output: Path,
                     writer.writerow({"timestamp_utc": datetime.now(timezone.utc).isoformat(),
                                      "line": line})
                     stream.flush()
-                    parsed = parse_line(line)
+                    parsed = parse_line(line, profile)
                     if parsed is not None:
                         kind, item = parsed
                         target = rows if kind == "row" else full
@@ -121,9 +128,9 @@ def capture(port_name: str, baud: int, variant: str, output: Path,
                             raise RuntimeError(f"copias UART contradictorias: {previous}; {item}")
                         if previous is None:
                             target[item["run"]] = item
-                            print(f"{kind} {item['run']}/5 recibido", flush=True)
-                    if "TRACE_OVERHEAD_DONE " in line:
-                        done = "TRACE_OVERHEAD_DONE PASS" in line
+                            print(f"{kind} {item['run']}/{runs} recibido", flush=True)
+                    if label + "_DONE " in line:
+                        done = label + "_DONE PASS" in line
                         if not done:
                             raise RuntimeError(f"la placa reporto fallo: {line}")
                         break
@@ -131,13 +138,17 @@ def capture(port_name: str, baud: int, variant: str, output: Path,
                     break
     finally:
         serial_port.close()
-    return validate(rows, full, variant, done)
+    return validate(rows, full, variant, done, runs, duration_ms)
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", required=True)
     parser.add_argument("--variant", choices=("trace-on", "trace-off"), required=True)
+    parser.add_argument("--profile", choices=("overhead-standard", "nominal"),
+                        default="overhead-standard")
+    parser.add_argument("--pilot", action="store_true",
+                        help="nominal: una ventana de 10 s, separada de la bateria formal")
     parser.add_argument("--baud", type=int, default=57600)
     parser.add_argument("--timeout", type=float, default=380)
     parser.add_argument("--output", type=Path, default=ROOT / "experiments" / "e11")
@@ -146,32 +157,42 @@ def main() -> int:
     parser.add_argument("--busid", help="BUSID de usbipd, por ejemplo 1-5")
     parser.add_argument("--distro", default="ubuntu", help="distribucion WSL")
     args = parser.parse_args()
-    if args.timeout < 310:
-        parser.error("--timeout debe permitir cinco ventanas de 60 s")
+    if args.pilot and args.profile != "nominal":
+        parser.error("--pilot solo aplica al perfil nominal")
+    runs, duration_ms = (1, 10000) if args.pilot else (5, 60000)
+    if args.timeout == 380 and args.pilot:
+        args.timeout = 40
+    if args.timeout < runs * duration_ms / 1000 + 10:
+        parser.error("--timeout insuficiente para la bateria")
     if args.flash and not args.busid:
         parser.error("--flash requiere --busid")
     if args.flash:
         from flash import flash_board
         flash_board(busid=args.busid, port=args.port, distro=args.distro,
-                    variant=args.variant, benchmark=True)
+                    variant=args.variant,
+                    benchmark="nominal" if args.profile == "nominal" else True,
+                    pilot=args.pilot)
     metadata = {"session": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
                 "timestamp_utc": datetime.now(timezone.utc).isoformat(),
                 "commit": git_commit(), "git_dirty": str(git_dirty()).lower(),
-                "variant": args.variant, "profile": "overhead-standard"}
+                "variant": args.variant, "profile": "nominal-pilot" if args.pilot
+                else args.profile}
     try:
         rows = capture(args.port, args.baud, args.variant, args.output.resolve(),
-                       args.timeout)
+                       args.timeout, args.profile, runs, duration_ms)
     except Exception as error:
         print(f"FAIL: {error}; archivos UART/CSV crudos conservados", file=sys.stderr)
         return 1
-    result_path = args.output.resolve() / "overhead_runs.csv"
+    result_path = args.output.resolve() / ("nominal_overhead_pilots.csv" if args.pilot
+                                          else "nominal_overhead_runs.csv" if args.profile == "nominal"
+                                          else "overhead_runs.csv")
     with result_path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=CSV_FIELDS)
         if stream.tell() == 0:
             writer.writeheader()
         for row in rows:
             writer.writerow({**metadata, **row})
-    print(f"PASS: cinco corridas completas; {result_path}")
+    print(f"PASS: {runs} corrida(s) completas; {result_path}")
     return 0
 
 

@@ -4,6 +4,15 @@
 #include <sentinel/task.h>
 #include <stdint.h>
 
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+#include <sentinel/inject_bench.h>
+#define BENCH_LABEL "TRACE_NOMINAL"
+#define BENCH_DONE "TRACE_NOMINAL_DONE"
+#else
+#define BENCH_LABEL "TRACE_OVERHEAD"
+#define BENCH_DONE "TRACE_OVERHEAD_DONE"
+#endif
+
 #include "../kernel/arch/xtensa/cpu.h"
 #include "../kernel/core/sched.h"
 #include "../kernel/core/time.h"
@@ -13,9 +22,17 @@
 #endif
 
 #define OVERHEAD_WORKERS 4u
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+#define OVERHEAD_RUNS TRACE_NOMINAL_RUNS
+#define OVERHEAD_RUN_MS TRACE_NOMINAL_RUN_MS
+#define OVERHEAD_MIN_OPS (OVERHEAD_RUN_MS / 100u)
+#else
 #define OVERHEAD_RUNS 5u
 #define OVERHEAD_RUN_MS 60000u
+#define OVERHEAD_MIN_OPS 1000u
+#endif
 
+#if !defined(TRACE_NOMINAL_BENCH) || !TRACE_NOMINAL_BENCH
 static mutex_t g_bench_mutex;
 static volatile uint32_t g_stop;
 static volatile uint32_t g_operations[OVERHEAD_WORKERS];
@@ -58,6 +75,11 @@ static uint32_t total_operations(void) {
     }
     return total;
 }
+#else
+static uint32_t total_operations(void) {
+    return inject_nominal_bench_iterations();
+}
+#endif
 
 #if SENTINEL_TRACE
 static void drain_trace(void) {
@@ -72,6 +94,12 @@ static void drain_trace(void) {
 
 static void overhead_coordinator(void *arg) {
     (void)arg;
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+    if (inject_nominal_bench_start() != 0) {
+        kprintf(BENCH_DONE " FAIL: no se pudo iniciar inject load nominal\r\n");
+        return;
+    }
+#else
     mutex_init(&g_bench_mutex, "trace-bench");
     uint32_t created = 0u;
     for (uint32_t i = 0; i < OVERHEAD_WORKERS; i++) {
@@ -81,16 +109,21 @@ static void overhead_coordinator(void *arg) {
         }
     }
     if (created != OVERHEAD_WORKERS) {
-        kprintf("TRACE_OVERHEAD_DONE FAIL: solo %u trabajadores\r\n", created);
+        kprintf(BENCH_DONE " FAIL: solo %u trabajadores\r\n", created);
         return;
     }
+#endif
 
     task_sleep(20u);
     for (uint32_t run = 1u; run <= OVERHEAD_RUNS; run++) {
         drain_trace();
         sched_bench_reset();
         uint32_t before_ops = total_operations();
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+        uint32_t before_errors = inject_nominal_bench_alloc_failures();
+#else
         uint32_t before_errors = g_errors;
+#endif
         uint64_t before_idle = task_get(0u)->cpu_cycles;
 #if SENTINEL_TRACE
         uint32_t before_emitted = trace_emitted();
@@ -110,7 +143,11 @@ static void overhead_coordinator(void *arg) {
         sched_bench_stats_t stats;
         sched_bench_snapshot(&stats);
         uint32_t ops = total_operations() - before_ops;
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+        uint32_t errors = inject_nominal_bench_alloc_failures() - before_errors;
+#else
         uint32_t errors = g_errors - before_errors;
+#endif
 #if SENTINEL_TRACE
         uint32_t emitted = trace_emitted() - before_emitted;
         uint32_t dropped = trace_dropped() - before_dropped;
@@ -121,14 +158,14 @@ static void overhead_coordinator(void *arg) {
         /* La UART del bare metal puede perder bytes al imprimir dos lineas
          * seguidas. Repetirlas con pausa ocurre fuera de la ventana medida. */
         for (uint32_t copy = 0u; copy < 12u; copy++) {
-            kprintf("TRACE_OVERHEAD: trace=%u run=%u ms=%u elapsed=%u idle=%u switches=%u sum=%u max=%u sq_hi=%u sq_lo=%u ops=%u emitted=%u dropped=%u errors=%u\r\n",
+            kprintf(BENCH_LABEL ": trace=%u run=%u ms=%u elapsed=%u idle=%u switches=%u sum=%u max=%u sq_hi=%u sq_lo=%u ops=%u emitted=%u dropped=%u errors=%u\r\n",
                     (uint32_t)SENTINEL_TRACE, run, OVERHEAD_RUN_MS,
                     elapsed_cycles, idle_cycles, stats.count,
                     stats.sum_cycles, stats.max_cycles,
                     (uint32_t)(stats.sum_squares >> 32),
                     (uint32_t)stats.sum_squares,
                     ops, emitted, dropped, errors);
-            kprintf("TRACE_OVERHEAD_FULL: trace=%u run=%u switches=%u sum=%u max=%u sq_hi=%u sq_lo=%u\r\n",
+            kprintf(BENCH_LABEL "_FULL: trace=%u run=%u switches=%u sum=%u max=%u sq_hi=%u sq_lo=%u\r\n",
                     (uint32_t)SENTINEL_TRACE, run, stats.full_count,
                     stats.full_sum_cycles, stats.full_max_cycles,
                     (uint32_t)(stats.full_sum_squares >> 32),
@@ -139,22 +176,33 @@ static void overhead_coordinator(void *arg) {
             stats.full_count == 0u ||
             (stats.count > stats.full_count + 2u) ||
             (stats.full_count > stats.count + 2u) ||
-            ops < 1000u || elapsed_cycles == 0u ||
+            ops < OVERHEAD_MIN_OPS || elapsed_cycles == 0u ||
             idle_cycles > elapsed_cycles) {
-            kprintf("TRACE_OVERHEAD_DONE FAIL\r\n");
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+            (void)inject_nominal_bench_stop();
+#else
             g_stop = 1u;
+#endif
+            kprintf(BENCH_DONE " FAIL\r\n");
             return;
         }
     }
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+    if (inject_nominal_bench_stop() != 0) {
+        kprintf(BENCH_DONE " FAIL: limpieza\r\n");
+        return;
+    }
+#else
     g_stop = 1u;
-    kprintf("TRACE_OVERHEAD_DONE PASS\r\n");
+#endif
+    kprintf(BENCH_DONE " PASS\r\n");
 }
 
 int32_t __real_shell_start(void);
 
 int32_t __wrap_shell_start(void) {
     if (task_create("trace-bench", overhead_coordinator, 0, 0u, 0u) < 0) {
-        kprintf("TRACE_OVERHEAD_DONE FAIL: coordinador\r\n");
+        kprintf(BENCH_DONE " FAIL: coordinador\r\n");
     }
     return __real_shell_start();
 }

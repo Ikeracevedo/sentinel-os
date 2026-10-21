@@ -75,6 +75,21 @@ CFLAGS += -DTRACE_OVERHEAD_BENCH=1
 LDFLAGS += -Wl,--wrap=shell_start
 endif
 
+# E11: mismo comando inject load nominal en ambas variantes, sin transporte.
+TRACE_NOMINAL_BOARD_TEST ?= 0
+ifeq ($(TRACE_NOMINAL_BOARD_TEST),1)
+ifneq ($(TRACE_OVERHEAD_BOARD_TEST),0)
+$(error solo se permite un banco de overhead a la vez)
+endif
+SRCS_C += tests/test_trace_overhead_board.c
+TRACE_NOMINAL_RUNS ?= 5
+TRACE_NOMINAL_RUN_MS ?= 60000
+CFLAGS += -DTRACE_OVERHEAD_BENCH=1 -DTRACE_NOMINAL_BENCH=1 \
+          -DTRACE_NOMINAL_RUNS=$(TRACE_NOMINAL_RUNS) \
+          -DTRACE_NOMINAL_RUN_MS=$(TRACE_NOMINAL_RUN_MS)
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
 # E08: prueba acotada de tramas reales en UART, sin shell concurrente.
 FRAME_BOARD_TEST ?= 0
 ifeq ($(FRAME_BOARD_TEST),1)

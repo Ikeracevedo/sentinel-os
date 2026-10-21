@@ -30,17 +30,23 @@ def wait_windows_port(port: str, seconds: float = 25) -> None:
 
 
 def flash_board(*, busid: str, port: str, distro: str,
-                variant: str, benchmark: bool) -> None:
+                variant: str, benchmark: bool | str,
+                pilot: bool = False) -> None:
     if variant not in ("trace-on", "trace-off"):
         raise ValueError(f"variante inesperada: {variant}")
     if not benchmark and variant == "trace-off":
         raise ValueError("TRANSPORT=1 requiere TRACE=1; usar el benchmark OFF")
     trace = int(variant == "trace-on")
-    build = (f"build/trace-overhead-{'on' if trace else 'off'}"
+    nominal = benchmark == "nominal"
+    build = (f"build/trace-nominal-{'on' if trace else 'off'}"
+             if nominal else f"build/trace-overhead-{'on' if trace else 'off'}"
              if benchmark else "build/transport")
     make_args = ["make", "-B", f"TRACE={trace}", f"BUILD={build}"]
     if benchmark:
-        make_args.append("TRACE_OVERHEAD_BOARD_TEST=1")
+        make_args.append("TRACE_NOMINAL_BOARD_TEST=1" if nominal else
+                         "TRACE_OVERHEAD_BOARD_TEST=1")
+        if nominal and pilot:
+            make_args.extend(("TRACE_NOMINAL_RUNS=1", "TRACE_NOMINAL_RUN_MS=10000"))
     else:
         make_args.append("TRANSPORT=1")
     make_args.append("flash")

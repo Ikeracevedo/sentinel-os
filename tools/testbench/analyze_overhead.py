@@ -33,7 +33,8 @@ def elf_sections(path: Path) -> dict[str, int]:
             for h in headers}
 
 
-def read_session(path: Path, session: str, variant: str) -> list[dict[str, str]]:
+def read_session(path: Path, session: str, variant: str,
+                 profile: str = "overhead-standard") -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as stream:
         rows = [row for row in csv.DictReader(stream)
                 if row["session"] == session and row["variant"] == variant]
@@ -41,7 +42,7 @@ def read_session(path: Path, session: str, variant: str) -> list[dict[str, str]]
     if len(rows) != 5 or {int(row["run"]) for row in rows} != set(range(1, 6)):
         raise ValueError(f"sesion {session}/{variant}: se requieren corridas 1..5")
     if any(int(row["ms"]) != 60_000 or int(row["trace"]) != expected_trace or
-           int(row["errors"]) != 0 or row["profile"] != "overhead-standard"
+           int(row["errors"]) != 0 or row["profile"] != profile
            for row in rows):
         raise ValueError(f"sesion {session}/{variant}: configuracion o errores invalidos")
     return sorted(rows, key=lambda row: int(row["run"]))
@@ -86,7 +87,7 @@ def summarize(off: list[dict[str, str]], on: list[dict[str, str]]) -> tuple[list
     return table, samples
 
 
-def plot(samples: dict, destination: Path) -> None:
+def plot(samples: dict, destination: Path, profile: str = "overhead-standard") -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -106,7 +107,7 @@ def plot(samples: dict, destination: Path) -> None:
         ax.set_title(title)
         ax.set_ylim(bottom=0)
         ax.grid(axis="y", alpha=0.2)
-    fig.suptitle("ESP32 · carga overhead-standard · 5 × 60 s por variante")
+    fig.suptitle(f"ESP32 · carga {profile} · 5 × 60 s por variante")
     fig.text(0.5, 0.01, "Barras: media; error: desviación entre corridas (n=5)",
              ha="center", fontsize=9)
     fig.tight_layout(rect=(0, 0.04, 1, 0.95))
@@ -118,15 +119,20 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--on-session", required=True)
     parser.add_argument("--off-session", required=True)
+    parser.add_argument("--profile", choices=("overhead-standard", "nominal"),
+                        default="overhead-standard")
     parser.add_argument("--data", type=Path, default=ROOT / "experiments" / "e11")
     args = parser.parse_args()
     data = args.data.resolve()
-    off = read_session(data / "overhead_runs.csv", args.off_session, "trace-off")
-    on = read_session(data / "overhead_runs.csv", args.on_session, "trace-on")
+    source = data / ("nominal_overhead_runs.csv" if args.profile == "nominal"
+                     else "overhead_runs.csv")
+    off = read_session(source, args.off_session, "trace-off", args.profile)
+    on = read_session(source, args.on_session, "trace-on", args.profile)
     table, samples = summarize(off, on)
     sizes = {}
-    for variant, folder in (("trace-off", "trace-overhead-off"),
-                            ("trace-on", "trace-overhead-on")):
+    folder_base = "trace-nominal" if args.profile == "nominal" else "trace-overhead"
+    for variant, folder in (("trace-off", folder_base + "-off"),
+                            ("trace-on", folder_base + "-on")):
         root = ROOT / "build" / folder
         sections = elf_sections(root / "kernel.elf")
         binary = root / "kernel.bin"
@@ -143,7 +149,8 @@ def main() -> int:
         table.append({"metric": metric, "variant": "on-minus-off",
                       "mean": sizes["trace-on"][size_key] - sizes["trace-off"][size_key],
                       "sd_between_runs": "", "n": "1+1", "unit": "B"})
-    report = data / "overhead_summary.csv"
+    prefix = "nominal_" if args.profile == "nominal" else ""
+    report = data / (prefix + "overhead_summary.csv")
     with report.open("w", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=("commit", "off_session",
             "on_session", "metric", "variant", "mean", "sd_between_runs",
@@ -152,7 +159,7 @@ def main() -> int:
         writer.writerows({"commit": off[0]["commit"],
                           "off_session": args.off_session,
                           "on_session": args.on_session, **row} for row in table)
-    plot(samples, data / "overhead_comparison.png")
+    plot(samples, data / (prefix + "overhead_comparison.png"), args.profile)
     by_key = {(row["metric"], row["variant"]): row for row in table}
     overhead = by_key[("cpu_occupied_pct", "on-minus-off")]
     latency = by_key[("switch_full_us", "on-minus-off")]
@@ -164,7 +171,7 @@ def main() -> int:
     print(f"Imagen .bin ON-OFF: {sizes['trace-on']['bin'] - sizes['trace-off']['bin']:+d} B")
     print(f"SHA256 OFF: {sizes['trace-off']['sha256']}")
     print(f"SHA256 ON:  {sizes['trace-on']['sha256']}")
-    print(f"Tabla: {report}; grafica: {data / 'overhead_comparison.png'}")
+    print(f"Tabla: {report}; grafica: {data / (prefix + 'overhead_comparison.png')}")
     return 0
 
 
