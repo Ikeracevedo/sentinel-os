@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 from bridge import Sink  # noqa: E402
 from e09_verify import Board  # noqa: E402
+from monitor import ResourceMonitor  # noqa: E402
 
 STATS_FIELDS = ("uptime_ticks", "heap_total", "heap_free", "heap_largest",
                 "heap_peak", "heap_blocks", "heap_free_blocks",
@@ -168,6 +169,8 @@ def main() -> int:
                         help="compilar/flashear en WSL y devolver el USB a Windows")
     parser.add_argument("--busid", help="BUSID de usbipd, por ejemplo 1-5")
     parser.add_argument("--distro", default="ubuntu", help="distribucion WSL")
+    parser.add_argument("--live-resources", action="store_true",
+                        help="mostrar CPU, heap y perdidas durante cada corrida")
     args = parser.parse_args()
     if args.duration < 2 or args.repeats < 5:
         parser.error("--duration debe ser >= 2 s y --repeats >= 5")
@@ -196,6 +199,8 @@ def main() -> int:
           f"perfiles={','.join(selected_profiles)}; "
           f"{args.repeats} corridas por perfil de {args.duration:g} s", flush=True)
     board = Board(args.port, args.baud, None)
+    if args.live_resources:
+        board.bridge.sinks.append(ResourceMonitor())
     link_error_runs = 0
     try:
         for profile in selected_profiles:

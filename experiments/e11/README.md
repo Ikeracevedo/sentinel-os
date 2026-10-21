@@ -1,5 +1,133 @@
 # E11: datos experimentales
 
+## Observación térmica pendiente
+
+Tras la batería de carga, Iker observó que la placa ESP32 estaba **muy
+caliente al tacto**. No se midió temperatura, corriente ni consumo eléctrico;
+Iker señaló el **chip largo de muchas patitas junto al LED rojo** en la
+[fotografía de la placa](placa_zona_caliente.jpg); el conector USB no le pareció
+caliente. Iker confirmó que la única alimentación era el cable USB: no había
+cables externos en los pines ni conexiones debajo a la protoboard. Por su ubicación y
+porque Windows identificó antes un adaptador CH340 (`1a86:7523`), ese chip
+es **probablemente** el puente USB-serie. Su referencia no se lee en la foto;
+la identificación y la causa del calentamiento no están confirmadas. La placa
+se enfrió tras desconectarla. Iker no observa daños visibles ni olor a quemado
+en la cara inferior, pero no dispone de multímetro ni puede enviar foto de
+ella. Se pausaron las pruebas de carga hasta revisar el monitor en reposo.
+No se atribuye el calor a la carga del SO sin evidencia. Los campos
+`cpu_idle_pct`, heap y pérdidas de telemetría ayudan a vigilar recursos,
+pero no son un termómetro ni sustituyen una inspección física.
+
+`tools/testbench/monitor.py` muestra cada trama de recursos sin enviar
+comandos. Se verificó en el PC reproduciendo
+`stats_20261021T002832Z_trace-on_nominal_r01.uart`: decodificó 10 muestras
+que concuerdan con las 10 filas del CSV original, sin errores CRC ni huecos.
+En esa captura previa la ocupación estimada fue 8–11 %, el heap libre
+permaneció en 96676 B y la placa reportó cero eventos descartados. Esos
+valores describen **esa corrida nominal histórica**; no se midieron mientras
+se observó el calor ni permiten diagnosticarlo. Para repetir la lectura sin
+placa:
+
+```powershell
+py tools/testbench/monitor.py --replay experiments/e11/stats_20261021T002832Z_trace-on_nominal_r01.uart
+```
+
+En la batería previa de 15 corridas de 10 s, `100 - cpu_idle_pct` calculado
+en el PC dio 4,00 ± 0,00 % (`light`), 10,86 ± 0,15 % (`nominal`) y
+42,00 ± 1,61 % (`heavy`); media y desviación estándar de las medias de cinco
+corridas por perfil. No hay una lectura simultánea de temperatura: que la
+placa estuviera caliente no demuestra que la CPU estuviera «a tope».
+
+`--port COMx` permite la escucha continua hasta Ctrl+C; `--duration 10`
+limita una comprobación breve, `--csv ruta.csv` guarda las muestras y
+`--raw ruta.uart` conserva todos los bytes UART. Las baterías
+`run.py` y `memory.py` aceptan `--live-resources` para mostrar los recursos
+durante sus corridas sin competir por el mismo puerto serie. Ese modo durante
+una carga todavía no se ha probado. La ocupación CPU se estima como 100 menos
+el porcentaje de tiempo ocioso de la ventana del planificador; no es una
+medición de temperatura ni de uso de cada núcleo por separado.
+
+La comprobación en vivo de 10 s sobre COM8 guardó
+`monitor_20261020T200010_idle.csv` y su `.uart`: 10 muestras, CPU ocupada
+estimada 3 %, heap libre 96676 B, cinco tareas y cero descartes, CRC o huecos.
+Una captura anterior, `monitor_20261020T195948_idle.*`, produjo ocho muestras.
+Ambas se conservan. La reproducción de cada UART coincide con las columnas
+numéricas de su CSV, muestra por muestra. Iker informó que el chip largo
+permaneció a temperatura normal durante la lectura breve; no hubo medición
+instrumental de temperatura. El monitor en reposo quedó validado en placa,
+pero este resultado no caracteriza cargas largas ni cierra HU-E11-01.
+
+`memory.py --pilot --repeats 1` ejecuta una sola corrida exploratoria y la
+guarda en `memory_pilots.csv`; se excluye de los experimentos de cinco o más
+repeticiones en `memory_runs.csv`. Cada corrida conserva sus muestras CSV y
+UART crudo. La limpieza se comprueba comparando el heap antes y después.
+
+El piloto `memory_20261021T010631Z_trace-on_leak_pilot01.*` duró 10 s en COM8.
+Las diez muestras del CSV se reproducen desde su UART crudo, que contiene un
+error CRC y una trama ausente **dentro de la ventana activa**. La placa reportó
+cero eventos descartados; son contadores distintos. El heap libre bajó de
+96676 B a un mínimo de 91076 B y volvió a 96676 B tras `inject stop leak`;
+el número de bloques regresó a 19. Iker informó temperatura normal al tacto
+en el chip largo durante el piloto, sin medición instrumental. El escenario
+solicita 256 B cada 500 ms. Su caída observada de 560 B/s concuerda con dos
+reservas de 256 B, más 20 B de cabecera y 4 B de canario por reserva según
+`kernel/mm/heap.c`. Es evidencia del comportamiento de esta carga controlada,
+no de una fuga espontánea del núcleo. El piloto no cuenta entre las cinco
+repeticiones requeridas para el análisis estadístico.
+
+El piloto `memory_20261021T010906Z_trace-on_frag_pilot01.*` mostró en la
+placa 49936 B libres, pero un hueco máximo de solo 3796 B en las diez
+muestras de la ventana. El indicador de fragmentación
+`100 × (1 − mayor_hueco / libre_total)` es 92,4 %, calculado en el PC.
+Tras detener el escenario, el heap volvió a 96676 B y 19 bloques. La
+reproducción del UART confirmó las diez muestras y cero errores CRC, huecos
+o descartes. Iker no comprobó la temperatura en este piloto; no se infiere
+que permaneciera normal. El piloto queda separado de las repeticiones.
+
+`memory.py --all-scenarios --duration 20 --repeats 5` ejecuta en orden cinco
+corridas `leak` y cinco `frag` sobre una misma imagen TRACE ON. El patrón
+`frag` se mantiene 30 s antes de reconstruirse; la ventana de 20 s observa
+un solo patrón por corrida. Cada medición entra en `memory_runs.csv` y tiene
+su CSV de muestras y UART crudo. El proceso se detiene si una corrida falla;
+los archivos parciales permanecen disponibles.
+
+La primera sesión `20261021T011225Z` se interrumpió porque Iker pulsó
+Ctrl+C, creyendo que debía detener la batería manualmente. Sus tres primeras
+corridas `leak` son completas y conservan CSV, UART y filas `PASS` en
+`memory_runs.csv`; la cuarta conserva seis muestras y 53248 bytes UART, sin
+fila de resultado. El UART parcial reproduce esas seis muestras sin CRC ni
+huecos. No se cuenta como corrida de 20 s ni se borra. Iker no observó calor
+durante la interrupción. La batería se detiene sola al final; no requiere
+Ctrl+C.
+
+La segunda sesión `20261021T011525Z` completó **5 × 20 s** de `leak` y
+**5 × 20 s** de `frag`, sin interrupción. El comando
+`py tools/testbench/analyze_memory.py --session 20261021T011525Z`
+comprobó que los diez UART reproducen cada muestra de
+sus CSV y que `uart_bytes` coincide con el tamaño crudo. Las diez filas de
+esta sesión tienen estado `PASS`, cero errores CRC, huecos y descartes, y
+heap restaurado a 96676 B y 19 bloques. `memory_runs.csv` contiene además
+las tres filas válidas de la sesión interrumpida; las estadísticas siguientes
+usan solo las cinco corridas de cada escenario de la sesión completa:
+
+| Escenario | Heap libre mínimo, media ± DE entre corridas | Fragmentación máxima, media ± DE | UART observado |
+|---|---:|---:|---:|
+| `leak` | 85084 ± 250 B | 0,000 ± 0,000 % | 9,333 ± 0,000 % |
+| `frag` | 49936 ± 0 B | 92,398 ± 0,000 % | 9,111 ± 0,000 % |
+
+El UART observado se calcula en el PC con bytes recibidos, 10 bits/byte,
+921600 bit/s y 20 s por corrida. La desviación cero de `frag` expresa que
+este patrón determinista produjo el mismo valor en cinco ventanas; no mide
+el error sistemático ni implica incertidumbre física nula. La ligera
+variación en el mínimo de `leak` depende también de la fase de muestreo
+aproximadamente cada segundo. Los datos crudos y la sesión interrumpida se
+conservan sin filtrar valores atípicos. La tabla derivada está en
+`memory_summary_20261021T011525Z.csv`; las gráficas con ejes y unidades son
+`memory_leak_20261021T011525Z.png` y
+`memory_frag_20261021T011525Z.png`. Las curvas individuales incluyen las
+muestras extra de las corridas con 21 observaciones; la banda de media ± DE
+usa los 20 instantes compartidos por las cinco corridas.
+
 Los CSV de esta carpeta son datos crudos capturados en placa. `stats_*.csv`
 conserva cada muestra de telemetría; `resultados.csv` resume cada ventana sin
 eliminar valores atípicos. Se versionan en `experiments/` porque `docs/` está
