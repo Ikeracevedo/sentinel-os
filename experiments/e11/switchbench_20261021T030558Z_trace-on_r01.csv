@@ -1,0 +1,6 @@
+timestamp_utc,commit,git_dirty,variant,profile,run,uptime_ticks,heap_total,heap_free,heap_largest,heap_peak,heap_blocks,heap_free_blocks,events_emitted,events_dropped,switch_count,switch_min_cycles,switch_max_cycles,switch_avg_cycles,task_count,trace_enabled,cpu_idle_pct,reserved
+2026-10-21T03:06:01.468073+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,3003,98304,96676,96676,1628,19,1,1344,0,638,480,3560,960,7,1,80,0
+2026-10-21T03:06:02.345693+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,4012,98304,96676,96676,1628,19,1,1838,0,875,480,3560,960,7,1,73,0
+2026-10-21T03:06:03.291611+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,5002,98304,96676,96676,1628,19,1,2328,0,1110,480,3600,920,7,1,74,0
+2026-10-21T03:06:04.672329+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,6022,98304,96676,96676,1628,19,1,2828,0,1350,480,3600,920,7,1,76,0
+2026-10-21T03:06:05.614592+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,7003,98304,96676,96676,1628,19,1,3308,0,1580,480,3560,960,7,1,74,0

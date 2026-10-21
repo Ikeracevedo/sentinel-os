@@ -1,6 +1,6 @@
 # E11: datos experimentales
 
-## Análisis preliminar de latencia de switch
+## Latencia de cambio de contexto
 
 `tools/testbench/analyze_switch.py` empareja `EV_SWITCH_OUT` (motivo y tarea
 entrante) con `EV_SWITCH_IN` (ciclos CCOUNT), comprueba la secuencia de eventos
@@ -62,6 +62,54 @@ Queda pendiente contrastar los motivos sin muestra y la meta fallida antes
 de considerar cerrada HU-E11-02.
 Iker informó que el chip largo permaneció a temperatura normal durante esta
 batería. Es una observación al tacto, no una medición térmica instrumental.
+
+Para observar motivos que no aparecieron en `inject load nominal`, el firmware
+incluye ahora `inject switchbench`: dos tareas de igual prioridad consumen
+20 ms de CPU, llaman a `sched_yield()` y duermen 100 ms. Así se buscan
+eventos de quantum, yield y bloqueo en una carga **complementaria y etiquetada
+por separado**. `tools/testbench/switch_reasons.py` captura una ventana de
+cada corrida, verifica que ambas tareas avanzan y que el heap vuelve a su
+línea base al detenerlas, y conserva los bytes UART y las duraciones
+emparejadas. La compilación TRACE ON con transporte y la sintaxis del script
+pasaron en PC/WSL. Sus duraciones
+no se sumarán a las 57 940 muestras nominales.
+
+El piloto en placa `switchbench_20261021T030558Z_trace-on_r01.*` duró 5 s
+después de compilar y flashear la nueva imagen TRACE ON: ambas tareas
+completaron 88 rondas en conjunto, el script confirmó limpieza exacta de
+heap y se reconstruyeron 1 206 switches completos, incluidos 57 por quantum,
+586 por bloqueo, 80 por yield y 483 por apropiación. La reproducción del UART
+coincide con el CSV de muestras; no hubo CRC, huecos ni eventos ausentes.
+Es un **piloto de una sola corrida**, no aporta incertidumbre entre repeticiones
+ni se suma a la batería nominal.
+
+La batería formal `switchbench_20261021T030915Z_trace-on_r*.uart` completó
+cinco ventanas de 10 s. Cada tarea avanzó y el heap volvió a la línea base
+después de cada ventana. Los cinco UART crudos reproducen exactamente los
+CSV de recursos y de switches, con cero CRC, huecos, eventos ausentes o
+descartes reportados por la placa. Hay **12 107 parejas completas**:
+571 por quantum, 5 882 por bloqueo, 799 por yield y 4 855 por apropiación.
+La media de las cinco corridas es **24,108 ± 0,010 µs** (media ± desviación
+estándar entre corridas). Por motivo, las medias entre corridas son:
+
+| Motivo | Muestras | Media observada ± desviación entre corridas |
+|---|---:|---:|
+| Quantum | 571 | 33,550 ± 0,000 µs |
+| Bloqueo | 5 882 | 14,780 ± 0,001 µs |
+| Yield | 799 | 16,503 ± 0,011 µs |
+| Apropiación | 4 855 | 35,550 ± 0,025 µs |
+
+La desviación cero del quantum refleja las cinco medias observadas iguales
+con este reloj y firmware; **no** significa incertidumbre física nula.
+El histograma `switchbench_hist_20261021T030915Z.png` conserva todos los
+valores, incluidos los de apropiación cercanos a 90 µs. Esta carga se diseñó
+para activar motivos ausentes en `nominal`; su media de 24,108 µs **no se
+combina** con la media nominal de 22,355 µs ni se usa para juzgar la meta S1.
+Iker observó que el chip largo permaneció a temperatura normal durante las
+cinco corridas, sin medición instrumental de temperatura.
+La imagen `build/transport/kernel.bin` usada en el piloto y esta batería tiene
+SHA-256 `0a264827050749c61ad682958996b621939e4f09fa007f8ec70836bfd0f7e5f0`
+calculado en el PC tras el flasheo; el archivo `build/` está excluido de Git.
 
 Los archivos `memory_20261021T012419Z_trace-on_leak_r01.csv` y `.uart`
 quedaron versionados como evidencia parcial de un intento posterior: el CSV
