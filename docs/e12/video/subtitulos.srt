@@ -1,0 +1,27 @@
+1
+00:00:00,000 --> 00:00:20,000
+Un sistema operativo puede parecer sano mientras sus tareas se bloquean. Sentinel OS expone ese estado y mide cuánto cuesta observarlo.
+
+2
+00:00:20,000 --> 00:00:50,000
+El kernel planifica tareas, gestiona memoria y un sistema de archivos en RAM. Sus sondas registran eventos con CCOUNT; el PC recibe tramas UART con secuencia y CRC.
+
+3
+00:00:50,000 --> 00:01:20,000
+El shell ejecuta comandos tipo Unix: pwd muestra la ruta actual; ls enumera archivos; cd cambia de directorio. ps muestra las tareas planificadas.
+
+4
+00:01:20,000 --> 00:01:50,000
+free expone el heap y su fragmentación. RAMFS funciona durante la sesión, pero pierde los archivos al reiniciar la placa.
+
+5
+00:01:50,000 --> 00:02:15,000
+Esta es una reproducción de bytes UART capturados en la ESP32 durante E11. inject deadlock crea dos tareas que esperan mutuamente sus mutexes.
+
+6
+00:02:15,000 --> 00:02:40,000
+El detector encuentra el ciclo, emite una alerta y graph muestra las dos aristas. inject stop deadlock limpia el escenario. Se detectaron 20 de 20 inyecciones.
+
+7
+00:02:40,000 --> 00:03:00,000
+Observar tuvo un costo: 1,285 puntos porcentuales de CPU. El switch observado promedió 22,355 microsegundos y falló la meta de 10. La validación GPIO quedó pendiente.
