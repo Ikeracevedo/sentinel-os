@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Primera bateria E11: cinco ventanas de carga nominal con CSV crudo.
+"""Bateria E11 de cargas light, nominal y heavy con CSV crudo.
 
 Ejecutar desde Windows, con firmware TRANSPORT=1 ya grabado:
-    py tools/testbench/run.py --port COM8 --variant trace-on --duration 10
+    py tools/testbench/run.py --port COM8 --variant trace-on --profile nominal --duration 10
 
 Agregar --flash --busid 1-5 para compilar y grabar desde WSL en la misma orden.
 Los demas escenarios se incorporaran en otra iteracion. Ninguna fila se
@@ -32,12 +32,14 @@ STATS_FIELDS = ("uptime_ticks", "heap_total", "heap_free", "heap_largest",
 RESULT_FIELDS = ("timestamp_utc", "commit", "git_dirty", "variant", "profile", "run",
                  "duration_s", "iterations", "alloc_failures", "stats_samples",
                  "events_emitted_delta", "events_dropped_delta", "switch_count_delta",
-                 "crc_errors_delta", "frame_gaps_delta", "status")
+                 "crc_errors_delta", "frame_gaps_delta", "uart_bytes", "status")
+LOAD_WORKERS = {"light": 2, "nominal": 5, "heavy": 8}
 
 
 class StatsCsv(Sink):
     def __init__(self, path: Path, metadata: dict[str, str], run: int) -> None:
         self.file = path.open("w", newline="", encoding="utf-8")
+        self.raw_file = path.with_suffix(".uart").open("wb")
         self.writer = csv.DictWriter(self.file, fieldnames=("timestamp_utc", "commit",
             "git_dirty",
             "variant", "profile", "run", *STATS_FIELDS))
@@ -45,10 +47,15 @@ class StatsCsv(Sink):
         self.metadata = metadata
         self.run = run
         self.samples: list[dict] = []
+        self.uart_bytes = 0
         self.active = False
 
     def write(self, kind: str, data: dict) -> None:
-        if kind == "stats" and self.active:
+        if kind == "raw" and self.active:
+            chunk = data["bytes"]
+            self.raw_file.write(chunk)
+            self.uart_bytes += len(chunk)
+        elif kind == "stats" and self.active:
             self.samples.append(data.copy())
             self.writer.writerow({"timestamp_utc": datetime.now(timezone.utc).isoformat(),
                                   **self.metadata, "run": self.run, **data})
@@ -56,6 +63,7 @@ class StatsCsv(Sink):
 
     def close(self) -> None:
         self.file.close()
+        self.raw_file.close()
 
 
 def git_commit() -> str:
@@ -68,38 +76,54 @@ def git_dirty() -> bool:
                                         cwd=ROOT, text=True).strip())
 
 
-def load_counters(text: str) -> tuple[int, int]:
+def load_counters(text: str, profile: str) -> tuple[int, int]:
     import re
     match = re.search(r"tiempo=\d+ ms ciclos=(\d+) .*fallos_alloc=(\d+)", text)
-    if match is None or "load: perfil=nominal" not in text:
+    if match is None or f"load: perfil={profile}" not in text:
         raise RuntimeError(f"estado de carga incompleto: {text!r}")
     return int(match.group(1)), int(match.group(2))
 
 
+def initial_status(board: Board) -> str:
+    """Reintentar solo la consulta inicial, segura si el puerto acaba de abrirse."""
+    for attempt in range(2):
+        try:
+            return board.command("inject status")
+        except RuntimeError:
+            print(f"sin respuesta inicial (intento {attempt + 1}/2): "
+                  f"{board.bridge.report()} hello={board.bridge.hello_count} "
+                  f"texto_parcial={''.join(board.capture.logs)[-200:]!r}",
+                  file=sys.stderr, flush=True)
+            if attempt:
+                raise
+            board.pump(2.0)
+    raise AssertionError("reintento inicial inalcanzable")
+
+
 def run_one(board: Board, sink: StatsCsv, duration: float,
-            variant: str) -> dict[str, int]:
+            variant: str, profile: str) -> dict[str, int]:
     board.bridge.sinks.append(sink)
     expected_trace = int(variant == "trace-on")
     before_crc = board.bridge.decoder.crc_errors
     before_gaps = board.bridge.decoder.gaps
     started = False
     try:
-        status = board.command("inject status")
+        status = initial_status(board)
         if "sin escenarios activos" not in status:
             raise RuntimeError(f"escenario previo activo: {status!r}")
         # El comando pudo llegar a la placa aunque se pierda su respuesta.
         # En ese caso tambien intentamos detener la carga.
         started = True
-        response = board.command("inject load nominal")
-        if "inject load nominal: 5 tareas" not in response:
+        response = board.command(f"inject load {profile}")
+        if f"inject load {profile}: {LOAD_WORKERS[profile]} tareas" not in response:
             raise RuntimeError(f"inicio de carga no confirmado: {response!r}")
         sink.active = True
         deadline = time.monotonic() + duration
         while time.monotonic() < deadline:
             board.pump(min(0.5, deadline - time.monotonic()))
         sink.active = False
-        iterations, failures = load_counters(board.command("inject status"))
-        if iterations == 0 or failures:
+        iterations, failures = load_counters(board.command("inject status"), profile)
+        if iterations == 0 or (failures and profile != "heavy"):
             raise RuntimeError(f"carga sin avance o con fallos: {iterations}, {failures}")
     finally:
         sink.active = False
@@ -124,7 +148,8 @@ def run_one(board: Board, sink: StatsCsv, duration: float,
             "events_dropped_delta": last["events_dropped"] - first["events_dropped"],
             "switch_count_delta": last["switch_count"] - first["switch_count"],
             "crc_errors_delta": board.bridge.decoder.crc_errors - before_crc,
-            "frame_gaps_delta": board.bridge.decoder.gaps - before_gaps}
+            "frame_gaps_delta": board.bridge.decoder.gaps - before_gaps,
+            "uart_bytes": sink.uart_bytes}
 
 
 def main() -> int:
@@ -132,6 +157,10 @@ def main() -> int:
     parser.add_argument("--port", required=True)
     parser.add_argument("--baud", type=int, default=921600)
     parser.add_argument("--variant", choices=("trace-on", "trace-off"), required=True)
+    profiles = parser.add_mutually_exclusive_group()
+    profiles.add_argument("--profile", choices=tuple(LOAD_WORKERS), default="nominal")
+    profiles.add_argument("--all-profiles", action="store_true",
+                          help="ejecutar light, nominal y heavy en una sola bateria")
     parser.add_argument("--duration", type=float, default=30)
     parser.add_argument("--repeats", type=int, default=5)
     parser.add_argument("--output", type=Path, default=ROOT / "experiments" / "e11")
@@ -144,50 +173,69 @@ def main() -> int:
         parser.error("--duration debe ser >= 2 s y --repeats >= 5")
     if args.flash and not args.busid:
         parser.error("--flash requiere --busid")
-    if args.flash and args.variant == "trace-off":
-        parser.error("TRANSPORT=1 requiere TRACE=1; OFF usa el benchmark UART")
+    if args.variant == "trace-off":
+        parser.error("TRANSPORT=1 requiere TRACE=1; OFF usa overhead.py por ahora")
     if args.flash:
         from flash import flash_board
         flash_board(busid=args.busid, port=args.port, distro=args.distro,
                     variant=args.variant, benchmark=False)
     commit = git_commit()
     metadata = {"commit": commit, "git_dirty": str(git_dirty()).lower(),
-                "variant": args.variant, "profile": "nominal"}
+                "variant": args.variant}
+    selected_profiles = tuple(LOAD_WORKERS) if args.all_profiles else (args.profile,)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     result_path = output / "resultados.csv"
+    if result_path.exists() and result_path.stat().st_size:
+        with result_path.open(newline="", encoding="utf-8") as stream:
+            if tuple(next(csv.reader(stream))) != RESULT_FIELDS:
+                raise RuntimeError(f"cabecera incompatible en {result_path}")
     print(f"commit={commit} git_dirty={metadata['git_dirty']} "
-          f"puerto={args.port} variante={args.variant}; "
-          f"{args.repeats} corridas de {args.duration:g} s", flush=True)
+          f"puerto={args.port} variante={args.variant} "
+          f"perfiles={','.join(selected_profiles)}; "
+          f"{args.repeats} corridas por perfil de {args.duration:g} s", flush=True)
     board = Board(args.port, args.baud, None)
+    link_error_runs = 0
     try:
-        for run in range(1, args.repeats + 1):
-            raw_path = output / f"stats_{stamp}_{args.variant}_nominal_r{run:02d}.csv"
-            sink = StatsCsv(raw_path, metadata, run)
-            try:
-                data = run_one(board, sink, args.duration, args.variant)
-            except Exception:
-                print(f"FAIL corrida {run}: datos parciales conservados en {raw_path}",
-                      file=sys.stderr, flush=True)
-                raise
-            finally:
-                board.bridge.sinks.remove(sink)
-                sink.close()
-            row = {"timestamp_utc": datetime.now(timezone.utc).isoformat(),
-                   **metadata, "run": run, "duration_s": args.duration,
-                   **data, "status": "PASS"}
-            with result_path.open("a", newline="", encoding="utf-8") as stream:
-                writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
-                if stream.tell() == 0:
-                    writer.writeheader()
-                writer.writerow(row)
-            print(f"PASS {run}/{args.repeats}: {data['stats_samples']} stats, "
-                  f"{data['iterations']} ciclos de carga, "
-                  f"{data['events_dropped_delta']} eventos perdidos", flush=True)
+        for profile in selected_profiles:
+            profile_metadata = {**metadata, "profile": profile}
+            for run in range(1, args.repeats + 1):
+                raw_path = output / f"stats_{stamp}_{args.variant}_{profile}_r{run:02d}.csv"
+                sink = StatsCsv(raw_path, profile_metadata, run)
+                try:
+                    data = run_one(board, sink, args.duration, args.variant, profile)
+                except Exception:
+                    print(f"FAIL {profile} corrida {run}: datos parciales conservados en {raw_path}",
+                          file=sys.stderr, flush=True)
+                    raise
+                finally:
+                    board.bridge.sinks.remove(sink)
+                    sink.close()
+                row = {"timestamp_utc": datetime.now(timezone.utc).isoformat(),
+                       **profile_metadata, "run": run, "duration_s": args.duration,
+                       **data,
+                       "status": ("PASS_LINK_ERRORS" if data["crc_errors_delta"] or
+                                  data["frame_gaps_delta"] else "PASS")}
+                link_error_runs += row["status"] == "PASS_LINK_ERRORS"
+                with result_path.open("a", newline="", encoding="utf-8") as stream:
+                    writer = csv.DictWriter(stream, fieldnames=RESULT_FIELDS)
+                    if stream.tell() == 0:
+                        writer.writeheader()
+                    writer.writerow(row)
+                print(f"{row['status']} {profile} {run}/{args.repeats}: "
+                      f"{data['stats_samples']} stats, "
+                      f"{data['iterations']} iteraciones de carga, "
+                      f"{data['alloc_failures']} fallos de reserva, "
+                      f"{data['events_dropped_delta']} descartes en placa, "
+                      f"{data['crc_errors_delta']} errores CRC, "
+                      f"{data['frame_gaps_delta']} tramas ausentes, "
+                      f"{data['uart_bytes']} bytes UART", flush=True)
     finally:
         board.close()
-    print(f"PASS bateria nominal; CSV: {result_path}")
+    outcome = "PASS" if link_error_runs == 0 else "COMPLETE_WITH_LINK_ERRORS"
+    print(f"{outcome} bateria {','.join(selected_profiles)}; "
+          f"{link_error_runs} corridas con errores de enlace; CSV: {result_path}")
     return 0
 
 
