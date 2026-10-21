@@ -1,5 +1,73 @@
 # E11: datos experimentales
 
+## Análisis preliminar de latencia de switch
+
+`tools/testbench/analyze_switch.py` empareja `EV_SWITCH_OUT` (motivo y tarea
+entrante) con `EV_SWITCH_IN` (ciclos CCOUNT), comprueba la secuencia de eventos
+y convierte con 40 ciclos/µs. Guarda una fila por duración en
+`switch_samples_<sesión>.csv`, un resumen por corrida y motivo en
+`switch_summary_<sesión>.csv`, y un histograma. Conserva todos los valores
+atípicos. Los eventos sueltos en los bordes de un archivo se cuentan aparte;
+un evento perdido o sin pareja dentro de la captura no se repara ni inventa.
+El valor es la **latencia observada con TRACE ON**, incluida la instrumentación,
+y excluye las últimas instrucciones del retorno de interrupción.
+
+La reproducción en PC de los cinco UART nominales
+`stats_20261021T002832Z_trace-on_nominal_r*.uart` (10 s por corrida) produjo
+**19 693 parejas**: mínimo 12,5 µs, media 22,586 µs, mediana 15,925 µs,
+σ muestral 11,329 µs, p95 37,925 µs, p99 42,425 µs y máximo 99,5 µs.
+De estas, 12 506 corresponden a bloqueo (media 14,676 µs) y 7 187 a
+apropiación de CPU (media 36,351 µs). La carga nominal no produjo eventos
+de quantum, yield o salida durante las ventanas capturadas; el desglose lo
+registra con cero muestras, no con una latencia ficticia. La mayor duración
+observada corresponde a la clase de apropiación, pero su causa precisa
+(por ejemplo, trabajo del tick o interrupciones) aún es **hipótesis**.
+En la tercera corrida el enlace tuvo 1 CRC erróneo y 3 tramas ausentes; las
+parejas incompletas se excluyeron del cálculo y sus contadores se conservan.
+Este análisis **no** satisface todavía el mínimo de 50 000 muestras de
+HU-E11-02 por sí solo.
+
+La batería nueva `stats_20261021T012850Z_trace-on_nominal_r*.uart` sí completó
+**cinco corridas de 30 s en placa**, con 1515–1520 iteraciones de carga por
+corrida, 30 muestras de recursos por corrida, cero fallos de reserva y cero
+eventos descartados reportados por la placa. Todos los CSV de telemetría
+coinciden fila por fila con la reproducción de su UART crudo. El PC reconstruyó
+**57 940 parejas completas** de eventos de cambio de contexto, sin completar
+artificialmente las parejas perdidas. La media de las cinco medias por corrida
+es **22,355 ± 0,223 µs**, donde ± es la desviación estándar entre corridas.
+Al juntar las muestras, el mínimo es 11,975 µs, la media ponderada 22,356 µs,
+la mediana 15,925 µs, la desviación muestral de cambios individuales
+11,299 µs, p95 37,875 µs, p99 42,425 µs y el máximo 99,350 µs.
+El valor sigue siendo una latencia **observada con TRACE ON**; no representa
+un switch sin instrumentación. La meta de media <10 µs **no se cumplió**.
+
+El motivo `block` reúne 37 419 muestras (media 14,668 ± 0,089 µs entre
+corridas); `preempt` reúne 20 521 (36,374 ± 0,162 µs). Dentro de estas
+ventanas de carga nominal, `quantum`, `yield` y `exit` tienen cero muestras;
+el banco no estima una latencia para esas clases. Los 301 valores ≥80 µs
+(aproximadamente 60 por corrida) se conservaron: todos son apropiaciones
+de CPU hacia TID 4, que corresponde a la tarea `detector` en la secuencia de
+creación del firmware. Se repiten aproximadamente cada 500 ms, igual que el
+periodo de `detector_tick`. Esa coincidencia y el código del despacho son
+consistentes con el trabajo periódico del detector durante el switch, pero
+esta captura no separa el coste de cada instrucción dentro del ISR.
+
+El puente reportó 7 CRC erróneos y 7 tramas ausentes en las cinco ventanas
+(0/0, 3/3, 1/1, 2/2 y 1/1); la secuencia de eventos permite contar **99
+eventos no recibidos** entre 162 595 observados, 0,0609 % de la suma de
+observados y ausentes. La primera corrida no tuvo errores; las otras cuatro
+se marcan `PASS_LINK_ERRORS`. Los valores atípicos no se eliminaron. El
+histograma y los CSV de muestras y resumen llevan el mismo ID de sesión.
+Queda pendiente contrastar los motivos sin muestra y la meta fallida antes
+de considerar cerrada HU-E11-02.
+Iker informó que el chip largo permaneció a temperatura normal durante esta
+batería. Es una observación al tacto, no una medición térmica instrumental.
+
+Los archivos `memory_20261021T012419Z_trace-on_leak_r01.csv` y `.uart`
+quedaron versionados como evidencia parcial de un intento posterior: el CSV
+contiene solo la cabecera y el UART tiene cero bytes. No hay medición de placa
+que pueda extraerse de ellos y no se incluyen en los resúmenes de memoria.
+
 ## Observación térmica pendiente
 
 Tras la batería de carga, Iker observó que la placa ESP32 estaba **muy
