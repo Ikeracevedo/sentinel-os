@@ -42,7 +42,10 @@ def read_session(path: Path, session: str, variant: str,
     if len(rows) != 5 or {int(row["run"]) for row in rows} != set(range(1, 6)):
         raise ValueError(f"sesion {session}/{variant}: se requieren corridas 1..5")
     if any(int(row["ms"]) != 60_000 or int(row["trace"]) != expected_trace or
-           int(row["errors"]) != 0 or row["profile"] != profile
+           int(row["errors"]) != 0 or int(row["dropped"]) != 0 or
+           (expected_trace == 1 and int(row["emitted"]) == 0) or
+           (expected_trace == 0 and int(row["emitted"]) != 0) or
+           row["profile"] != profile
            for row in rows):
         raise ValueError(f"sesion {session}/{variant}: configuracion o errores invalidos")
     return sorted(rows, key=lambda row: int(row["run"]))
@@ -50,6 +53,16 @@ def read_session(path: Path, session: str, variant: str,
 
 def mean_sd(values: list[float]) -> tuple[float, float]:
     return statistics.mean(values), statistics.stdev(values)
+
+
+def switch_sigma_us(row: dict[str, str]) -> float:
+    count = int(row["full_switches"])
+    if count < 2:
+        raise ValueError("se requieren al menos dos switches para sigma")
+    total = int(row["full_sum"])
+    squares = (int(row["full_sq_hi"]) << 32) | int(row["full_sq_lo"])
+    variance = (squares - total * total / count) / (count - 1)
+    return math.sqrt(max(0.0, variance)) / 40
 
 
 def summarize(off: list[dict[str, str]], on: list[dict[str, str]]) -> tuple[list[dict], dict]:
@@ -62,6 +75,7 @@ def summarize(off: list[dict[str, str]], on: list[dict[str, str]]) -> tuple[list
                                  for r in rows],
             "switch_full_us": [int(r["full_sum"]) / int(r["full_switches"]) / 40
                                for r in rows],
+            "switch_full_sigma_us": [switch_sigma_us(r) for r in rows],
             "switch_c_us": [int(r["sum"]) / int(r["switches"]) / 40
                             for r in rows],
             "throughput_ops_per_s": [int(r["ops"]) / 60 for r in rows],
@@ -69,6 +83,7 @@ def summarize(off: list[dict[str, str]], on: list[dict[str, str]]) -> tuple[list
             "events_dropped": [int(r["dropped"]) for r in rows],
         }
     units = {"cpu_occupied_pct": "% CPU", "switch_full_us": "us",
+             "switch_full_sigma_us": "us",
              "switch_c_us": "us", "throughput_ops_per_s": "ops/s",
              "events_per_s": "eventos/s", "events_dropped": "eventos"}
     table = []
@@ -84,6 +99,20 @@ def summarize(off: list[dict[str, str]], on: list[dict[str, str]]) -> tuple[list
                       "mean": f"{on_mean - off_mean:.9f}",
                       "sd_between_runs": f"{math.hypot(off_sd, on_sd):.9f}",
                       "n": "5+5", "unit": units[key]})
+    # Estimacion integral: incluye sondas, buffer y su consumidor. Cada par
+    # usa el mismo numero de corrida, carga y duracion; no representa el
+    # costo aislado de una llamada trace_emit.
+    on_rows = sorted(on, key=lambda r: int(r["run"]))
+    effective_cycles = [
+        (samples["trace-on"]["cpu_occupied_pct"][i] -
+         samples["trace-off"]["cpu_occupied_pct"][i]) / 100 *
+        int(on_rows[i]["elapsed"]) / int(on_rows[i]["emitted"])
+        for i in range(5)
+    ]
+    mean, sd = mean_sd(effective_cycles)
+    table.append({"metric": "effective_cycles_per_event", "variant": "on-minus-off",
+                  "mean": f"{mean:.9f}", "sd_between_runs": f"{sd:.9f}",
+                  "n": "5 pares", "unit": "ciclos/evento"})
     return table, samples
 
 
@@ -163,10 +192,13 @@ def main() -> int:
     by_key = {(row["metric"], row["variant"]): row for row in table}
     overhead = by_key[("cpu_occupied_pct", "on-minus-off")]
     latency = by_key[("switch_full_us", "on-minus-off")]
-    print(f"CPU TRACE ON-OFF: {float(overhead['mean']):.3f} ± "
+    effective = by_key[("effective_cycles_per_event", "on-minus-off")]
+    print(f"CPU TRACE ON-OFF: {float(overhead['mean']):.3f} +/- "
           f"{float(overhead['sd_between_runs']):.3f} puntos porcentuales")
-    print(f"Switch observado ON-OFF: {float(latency['mean']):.3f} ± "
+    print(f"Switch observado ON-OFF: {float(latency['mean']):.3f} +/- "
           f"{float(latency['sd_between_runs']):.3f} us")
+    print(f"Costo integral ON-OFF: {float(effective['mean']):.3f} +/- "
+          f"{float(effective['sd_between_runs']):.3f} ciclos/evento")
     print(f"RAM estatica ON-OFF: {sizes['trace-on']['ram'] - sizes['trace-off']['ram']:+d} B")
     print(f"Imagen .bin ON-OFF: {sizes['trace-on']['bin'] - sizes['trace-off']['bin']:+d} B")
     print(f"SHA256 OFF: {sizes['trace-off']['sha256']}")
