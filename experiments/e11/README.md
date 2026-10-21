@@ -1,5 +1,24 @@
 # E11: datos experimentales
 
+## Banco automatizado
+
+`tools/testbench/run.py --port COM8 --variant trace-on --all-profiles
+--duration 10 --repeats 5 --flash --busid 1-5` compiló y grabó desde WSL,
+devolvió el CH340 a Windows y ejecutó sin intervención entre corridas los
+perfiles `light`, `nominal` y `heavy`. La sesión `20261021T002832Z` conserva
+15 CSV de recursos y 15 UART, más `resultados.csv` con fecha, commit,
+variante, perfil y número de corrida. Cuatro ventanas tuvieron errores de
+enlace en Windows y permanecen etiquetadas `PASS_LINK_ERRORS`; la carga
+avanzó y el dispositivo no reportó descartes en las quince.
+
+`TRACE=0` no puede usar el transporte binario que lleva las estadísticas de
+`run.py`; por ello la comparación ON/OFF se automatiza en
+`tools/testbench/overhead.py`, que flashea cada variante, ejecuta cinco
+ventanas nominales por variante y guarda sus propios CSV/UART. Los
+escenarios de memoria y detector tienen scripts de banco separados porque
+comprueban restauración y alertas distintas. Esta separación evita llamar
+"misma prueba" a cargas o formatos de telemetría incompatibles.
+
 ## Latencia de cambio de contexto
 
 `tools/testbench/analyze_switch.py` empareja `EV_SWITCH_OUT` (motivo y tarea

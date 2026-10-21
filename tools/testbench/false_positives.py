@@ -94,13 +94,14 @@ def main() -> int:
     raw_path = output / f"false_positives_{session}.uart"
     csv_path = output / ("false_positives_pilots.csv" if args.pilot else
                          "false_positives_runs.csv")
+    # Capturar el estado de Git antes de crear los archivos de esta corrida.
+    metadata = {"session": session, "commit": git_commit(),
+                "git_dirty": str(git_dirty()).lower(),
+                "duration_target_s": args.duration}
     board = Board(args.port, args.baud, None)
     observed = AlertCounter()
     raw = FileSink(str(raw_path))
     board.bridge.sinks.extend((observed, raw))
-    metadata = {"session": session, "commit": git_commit(),
-                "git_dirty": str(git_dirty()).lower(),
-                "duration_target_s": args.duration}
     baseline: dict | None = None
     started = False
     start_time = 0.0
