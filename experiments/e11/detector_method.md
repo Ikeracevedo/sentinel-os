@@ -21,4 +21,33 @@ máximo acumulado desde el arranque. En el piloto fueron 2.042 y 2.459
 ciclos, equivalentes a 51,05 y 61,475 µs a 40 MHz. No se conoce qué
 ejecución específica produjo la alerta, por lo que 51,05 µs no se presenta
 como costo exacto de esa detección. Las mediciones de 20 inyecciones y la
-hora nominal sin falsos positivos quedan pendientes.
+hora nominal sin falsos positivos quedaban pendientes al cerrar el piloto.
+
+## Batería formal de 20 inyecciones
+
+La sesión `20261021T042124Z` empleó el commit limpio `0323e6a` y el mismo
+firmware `TRACE=1`, `TRANSPORT=1` en las 20 corridas. El analizador
+`tools/testbench/analyze_detector.py` volvió a decodificar cada UART y
+comprobó una inyección, dos alertas, marcas `CCOUNT` idénticas al CSV,
+tamaño del crudo y ausencia de CRC, huecos y descartes. Total: 20/20
+detecciones, 79 chequeos y 1.101.824 bytes UART conservados.
+
+La demora entre la inyección y la primera alerta, recalculada de los ciclos
+sin redondear, fue **320,862 ± 158,026 ms** (desviación entre 20 corridas),
+con mínimo **70,294 ms** y máximo **544,301 ms**. No se excluyeron extremos.
+El detector corre cada 500 ms (`DETECTOR_PERIOD_MS`); la fase entre el
+momento de inyectar y el siguiente chequeo explica buena parte de la
+dispersión. El tiempo de creación del escenario y otros trabajos del SO
+pueden añadir demora; esta batería no permite atribuirles una cantidad
+exacta.
+
+El coste de la última ejecución consultada en cada corrida fue
+**51,144 ± 0,229 µs**. Esta no es necesariamente la misma ejecución que
+encontró el ciclo. El CSV de captura restó dos tiempos ya truncados a
+microsegundos; en cinco filas su demora difiere menos de 1 µs de la resta
+directa de ciclos. El resumen formal usa los ciclos originales y conserva
+las filas originales sin corregirlas.
+
+La hora nominal sin inyección sigue pendiente. E10 registró previamente
+una hora sin falsas alertas, pero esa prueba no conservó el UART crudo
+requerido para la evidencia de E11.
