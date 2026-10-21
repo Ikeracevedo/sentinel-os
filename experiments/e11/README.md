@@ -1,5 +1,22 @@
 # E11: datos experimentales
 
+## Estado final de la campaña (21 de octubre de 2026)
+
+Las seis historias tienen evidencia experimental o, en HU-E11-05, el método
+alternativo previsto por falta de analizador/osciloscopio. Los resultados
+consolidados están en `master_results.csv` y `master_results.md`; los datos
+crudos, incluidos pilotos fallidos y errores de enlace, permanecen en esta
+carpeta. La media nominal observada de switch **no cumple** S1 (<10 µs), y
+la discrepancia GPIO–CCOUNT <5 % **no se pudo comprobar**. S2 (CPU de TRACE)
+y S5 (descartes nominales) sí se cumplieron. El texto posterior de esta página
+conserva la cronología de pilotos; algunas frases de "pendiente" describen el
+estado en aquel momento y no sustituyen esta sección final.
+
+`external_clock_method.md` explica por qué el cronómetro de Windows solo da
+una cota superior por cambio, no una validación del error de CCOUNT. La
+auditoría reproducible de archivos y versionado es `tools/testbench/audit_e11.py`.
+El informe narrativo de resultados corresponde a E12.
+
 ## Banco automatizado
 
 `tools/testbench/run.py --port COM8 --variant trace-on --all-profiles
