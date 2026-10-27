@@ -53,6 +53,16 @@ SRCS_C += tests/test_trace_sched_board.c
 LDFLAGS += -Wl,--wrap=shell_start
 endif
 
+# E20: compara cambios causados por agotamiento del quantum con dos tareas CPU.
+SLICE_BOARD_TEST ?= 0
+ifeq ($(SLICE_BOARD_TEST),1)
+ifneq ($(TRACE),1)
+$(error SLICE_BOARD_TEST=1 requiere TRACE=1)
+endif
+SRCS_C += tests/test_slice_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
 # La misma carga de heap y mutex mide el coste de TRACE=0 frente a TRACE=1.
 TRACE_COST_BOARD_TEST ?= 0
 ifeq ($(TRACE_COST_BOARD_TEST),1)
@@ -142,7 +152,7 @@ flash: all
 		write_flash $(FLASH_ADDR) $(TARGET).bin
 
 monitor:
-	python3 -m serial.tools.miniterm $(PORT) 57600
+	python3 -m serial.tools.miniterm $(PORT) 57600 -f direct
 
 HOSTCC     := gcc
 HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
@@ -150,6 +160,8 @@ HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
 # Pruebas en WSL: heap, VFS y ring buffer de traza.
 test:
 	@mkdir -p $(BUILD)
+	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_slice_parse.c -o $(BUILD)/test_slice_parse
+	./$(BUILD)/test_slice_parse
 	$(HOSTCC) $(HOSTFLAGS) -Werror -DALERTS_HOST tests/test_alerts.c kernel/core/alerts.c -o $(BUILD)/test_alerts
 	./$(BUILD)/test_alerts
 	$(HOSTCC) $(HOSTFLAGS) -O2 -Werror -DGRAPH_HOST tests/test_graph.c kernel/core/graph.c -o $(BUILD)/test_graph

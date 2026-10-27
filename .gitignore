@@ -12,6 +12,10 @@ docs/*
 docs/tasks/*
 !docs/tasks/E11-validacion.md
 !docs/tasks/E12-documentacion.md
+!docs/tasks/E20-comandos-rubrica.md
+!docs/tasks/E21-dashboard-gantt.md
+!docs/tasks/E22-validacion-rubrica.md
+!docs/tasks/E23-entregables-manual.md
 !docs/e12/
 docs/e12/build/
 

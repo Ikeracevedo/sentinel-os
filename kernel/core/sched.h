@@ -10,6 +10,20 @@ tcb_t *sched_current(void);
 uint32_t sched_dispatch(ctx_frame_t *frame);
 void sched_yield(void);
 
+/** Quantum global en ticks de 1 ms, aplicado a tareas actuales y futuras. */
+uint32_t sched_quantum_ticks(void);
+uint32_t sched_quantum_rotations(void);
+typedef struct {
+    uint32_t switches_total;
+    uint32_t rotations_total;
+    uint32_t slice_seconds;
+    uint32_t switches_per_s_x100;
+    uint32_t rotations_per_s_x100;
+} sched_slice_stats_t;
+void sched_slice_stats(sched_slice_stats_t *out);
+void sched_slice_reset_window(void);
+int sched_set_quantum(uint32_t ms);
+
 /* % de CPU ociosa (0-100) medido en la ultima ventana de 1 s cerrada. */
 uint32_t cpu_idle_percent(void);
 

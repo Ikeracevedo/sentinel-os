@@ -23,7 +23,8 @@ enum {
 
     EV_HEARTBEAT   = 0x40,
     EV_ALERT       = 0x50,
-    EV_INJECT      = 0x60
+    EV_INJECT      = 0x60,
+    EV_SLICE_CHANGE = 0x61
 };
 
 /*

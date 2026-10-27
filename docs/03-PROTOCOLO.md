@@ -131,6 +131,7 @@ typedef struct __attribute__((packed)) {
 | `0x40` | `EV_HEARTBEAT` | — | ticks del sistema | eventos perdidos acumulados |
 | `0x50` | `EV_ALERT` | tarea | código de alerta | dato asociado |
 | `0x60` | `EV_INJECT` | — | escenario | parámetro |
+| `0x61` | `EV_SLICE_CHANGE` | tarea que ejecutó `slice` | quantum anterior (ms) | quantum nuevo (ms) |
 
 ---
 

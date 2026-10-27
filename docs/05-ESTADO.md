@@ -11,7 +11,7 @@
 
 | Campo | Valor |
 |---|---|
-| **Fase actual** | 🟡 **E12 — Documentación y sustentación**: fuentes E11 auditadas; README, informe, presentación y materiales de demo preparados y verificados localmente. E11 conserva 5/6 historias que cumplen y S1 fallida. |
+| **Fase actual** | 🟡 **E12 — Documentación y sustentación**, con E20-HU-02 (`slice`) iniciada por solicitud de Iker. E11 conserva 5/6 historias que cumplen y S1 fallida; E12 y E20 siguen abiertas. |
 | **Checkpoint alcanzado** | 🟡 **CP7 — "Se diagnostica"** validado en placa e integrado en `main` (`04703e9`), con tag local `CP7`; falta la demostración al profesor y no se verificó la publicación remota del tag. |
 | **Siguiente checkpoint** | **CP8 — "Se demuestra"**, requiere completar E11 y E12. |
 | **Épica en curso** | **E12** en `feature/documentacion-e12`. Usa la tabla maestra E11, 115 evidencias versionadas y la rúbrica formal R-002. El video de portafolio de 3 min y el video calificado de hasta 10 min son entregables distintos. |
@@ -70,7 +70,7 @@ Leyenda: ⬜ Pendiente · 🟡 En curso · ✅ Completado · ⏭️ Descartado
 | E17 | CI y tests | ⬜ | 0/4 | 0/5 | |
 | E18 | Políticas avanzadas | ⬜ | 0/5 | 0/14 | Backlog |
 | E19 | Persistencia en flash | ⬜ | 0/4 | 0/12 | Backlog |
-| **E20** | 🔴 **Comandos y lanzador (rúbrica)** | ⬜ | 0/6 | 0/8,5 | `slice`, `stats`, `exit`, `./minios` → C2, C5, C6, C8, C9 |
+| **E20** | 🔴 **Comandos y lanzador (rúbrica)** | 🟡 | 0/6 | 0/8,5 | `slice` medido en placa: 60 vs 8 rotaciones en 12 s (7,5×); `stats` y `help` en validación. |
 | **E21** | 🔴 **Dashboard con Gantt** | ⬜ | 0/5 | 0/8 | ⚠️ Cuello de botella: 4 criterios dependen → C2, C4, C6, C7 |
 | **E22** | 🔴 **Validación de la rúbrica** | ⬜ | 0/5 | 0/5 | ⭐ CP11. Verifica los 9 + 10 capturas |
 | **E23** | 🔴 **Entregables y manual de uso** | ⬜ | 0/6 | 0/9 | ⭐ CP12. Video, portada, repo, **MANUAL-DE-USO.md** |
@@ -136,6 +136,100 @@ Leyenda: ⬜ Pendiente · 🟡 En curso · ✅ Completado · ⏭️ Descartado
 ---
 
 ## 5. Bitácora de sesiones
+
+### 2026-10-21 — E20-HU-02: `slice` en implementación
+
+- Iker pidió iniciar E20-HU-02 antes del cierre de E11/E12. No se editaron sus archivos de tarea.
+- Se añadió `slice [ms]` (1..10000 ms), un valor por defecto del planificador y su aplicación
+  a las tareas actuales y futuras. Al reducir el quantum, se recorta el turno restante.
+- Se definió `EV_SLICE_CHANGE` (`0x61`) con quantum anterior y nuevo para el futuro Gantt.
+- El parser de `slice` pasó una prueba C de host con límites y entradas que provocarían
+  overflow. `gcc -fsyntax-only` con `-Wall -Wextra -Werror` pasó en TRACE=0 y TRACE=1.
+- Iker ejecutó `make clean && make && make size && make test`: imagen Xtensa creada sin
+  errores ni warnings; `slice_parse: PASS`, 62 asserts de heap y 92 de VFS sin fallos,
+  más el resto de pruebas de host en PASS/OK. Tamaño: text=57879, data=752,
+  bss=211728 B. **Pendiente:** columna `QUANTUM`, `stats` y Gantt.
+  HU-02 y C6 no están cerrados; no hay commit propuesto todavía.
+- `make flash PORT=/dev/ttyUSB0` verificó el hash de 58720 B escritos en la ESP32.
+  La primera captura terminó al abrir `miniterm`. En la siguiente, el prompt respondió a
+  `ls` y, tras reiniciar, apareció el banner y volvió `sentinel:/home/iker$` sin PANIC
+  visible. Arranque observado en placa.
+- Prueba de `slice` observada en placa: 10 → 200 → 1500 ms, sin reinicio (`uptime`
+  65489 → 118674 ms). `0`, `10001`, `abc` y `4294977296` dieron error y mantuvieron
+  1500 ms; al final se restauró 10 ms. Falta medir la relación de switches entre
+  200 y 1500 ms y verificar TCB/`ps`, `stats` y Gantt. HU-02 sigue abierta.
+- Con `slice 200`, `run hog` creó TID 4 y 5; `ps -v` los mostró. Tras cambiar a 1500 ms,
+  otra muestra de `ps -v` indicó CPU 50%/49% para ambos y el shell seguía respondiendo.
+  `kill 4` y `kill 5` devolvieron éxito; el siguiente `ps -v` ya no mostró tareas hog y
+  `slice 10` restauró el valor inicial. Los valores `CAMBIOS` incluyen preempciones de
+  otras tareas y no prueban por sí solos la relación ≥5×.
+- `clear` mostró `␛[2J␛[H` en `miniterm`: su filtro `default` convierte ESC en un símbolo
+  visible. `make monitor` ahora pide `-f direct` para pasar la secuencia ANSI al terminal.
+  Iker confirmó en captura que la pantalla se limpia; el scrollback/wrap del terminal
+  conserva su propia presentación. También confirmó que `reboot` vuelve al banner y prompt.
+- Se detectó que el planificador reiniciaba `quantum_left` en cada entrada a CPU, incluso
+  después de preempciones de `detector` (cada 20 ms). Iker autorizó corregir este código
+  preexistente de E02. Ahora la preempción conserva el remanente; bloqueo, cesión o
+  agotamiento inician un turno nuevo. Se aplica igual con TRACE=0 y TRACE=1.
+- Compilación Xtensa normal, TRACE=0 y banco E20 `SLICE_BOARD_TEST=1` pasaron con `-Werror`.
+  `make test` pasó. Se preparó `tests/test_slice_board.c`: dos tareas CPU, ventanas de 12 s
+  para 200/1500 ms, conteo de `EV_SWITCH_OUT` con motivo `QUANTUM`, relación ≥5 y cero
+  pérdidas de traza. **Aún no se ha flasheado ni ejecutado este banco en placa.**
+- La relación de cambios *por quantum* y la de cambios *totales* son métricas distintas:
+  `detector` y `trace-heap` producen cambios periódicos independientes del valor de slice.
+  La métrica total requerida por C6 sigue sin demostrar; no se marca HU-02 como cerrada.
+- Se añadió `QUANTUM` a la tabla de `ps` y `help ps` explica sus columnas. La imagen Xtensa
+  normal compiló con este ajuste; queda por comprobar su presentación real en placa.
+- Primera corrida del banco E20 en placa, tras flasheo con hash verificado: dos arranques
+  dieron `200ms=0 1500ms=0 perdidos=0` y `SLICE_BOARD_DONE FAIL`. No se atribuye aún el
+  cero al planificador: el banco no imprimía si se crearon/corrieron sus trabajadores ni
+  cuántos cambios de otros motivos recibió. Se añadió diagnóstico de TID, trabajo,
+  eventos de salida, preempciones y mínimo de quantum restante; compiló en Xtensa y
+  espera repetición en placa. HU-02/C6 siguen abiertos.
+- La segunda corrida diagnosticó TID 3/4, ~30 millones de iteraciones por trabajador,
+  6004 salidas de esos trabajadores, 6000 preempciones, mínimo `quantum_left=5` y cero
+  eventos perdidos. El propio observador del banco despertaba cada 5 ms, divisor exacto
+  de 200 y 1500 ms; al coincidir con el fin de turno, la salida quedaba clasificada como
+  preempción de prioridad superior. Se cambió el observador a intervalos de 1003 ms para
+  quitar esa sincronización y reducir su interferencia. Compilación Xtensa PASS; repetir
+  en placa antes de concluir si el scheduler cumple la relación ≥5×.
+- Tercera corrida en placa: ~30,7 millones de iteraciones por trabajador, 686 salidas
+  totales, 348 de trabajadores, 326 preempciones, cero pérdidas. La traza etiquetó solo
+  11 rotaciones `QUANTUM` con 200 ms y 4 con 1500 ms (2,75×): no cumple ≥5× con ese
+  contador. Se añadió una fuente del planificador `sched_quantum_rotations()` que cuenta
+  vencimientos de quantum con otra tarea de igual prioridad lista, incluso si en ese
+  mismo tick despierta una de prioridad superior y el evento se etiqueta `PREEMPT`.
+  El banco compara ese contador y conserva el conteo de trazas como diagnóstico. Las
+  imágenes Xtensa TRACE=1/0 compilaron; falta la nueva medición en placa.
+- Cuarta corrida en placa con el contador del planificador: 60 rotaciones en 12 s a
+  200 ms y 8 a 1500 ms, relación **7,5×**, `trace=11,4`, cero eventos perdidos,
+  `SLICE_BOARD_DONE PASS`. El shell respondió a `ls` después del banco. En la misma
+  imagen Iker comprobó `slice 200` y `slice 1500`: `ps` mostró el quantum solicitado
+  en idle, trace-heap, shell y detector; se restauró `slice 10`. C6 queda demostrado
+  para rotaciones entre pares, distinguiéndolas de todos los cambios de contexto.
+- Se amplió el ancho de nombre en `ps` para separar `trace-heap` de su estado y se
+  implementó `stats` con las cinco secciones de la rúbrica. Reutiliza los contadores
+  del planificador y las fuentes existentes de tareas, heap y traza. `stats -r` fija
+  bases para esta vista sin alterar los contadores usados por otros comandos. Las
+  imágenes Xtensa TRACE=1 y TRACE=0 compilaron con `-Werror`.
+- Iker validó `stats` en placa: a 200 ms con dos tareas `hog`, 96 rotaciones / 19 s
+  (5,05/s), CPU ociosa 0%; a 1500 ms, 18 / 27 s (0,66/s). Tras `kill 4` y `kill 5`,
+  `stats` mostró 6 creadas, 4 activas, 2 terminadas y 99% de CPU ociosa; `ps`
+  confirmó que no quedaban tareas `hog`. El heap usado siguió en 1628 B porque
+  `hog` no reserva heap; la liberación de memoria de una tarea `alloc` aún requiere
+  prueba específica. Con `TRANSPORT=0`, el ring de traza lleno explica 100% de eventos
+  perdidos en la ventana; se aclaró en la salida de `stats` y en `help stats`.
+- El primer `stats` tras flashear llegó entrecortado por el enlace serial. Se añadió
+  `uart_flush()` al final de `stats` y `help`. En la siguiente captura Iker obtuvo
+  `stats -r` y `stats` completos, así como `help stats`, `help ps` y `help slice`.
+  La salida larga de `help` resultó difícil de leer: mezclaba sintaxis y descripción
+  de 29 comandos y el terminal partía líneas sin conservar sangría. Se reorganizó
+  en cinco categorías con una línea por comando, `help <categoria>` filtra una
+  categoría y `help <comando>` muestra uso y efectos con ancho limitado a 76 columnas.
+  El índice incluye los 29 comandos registrados; imágenes Xtensa TRACE=1/0 compilan
+  con `-Werror`. Iker verificó en placa `help` completo: cinco grupos legibles,
+  los 29 comandos presentes y retorno correcto al prompt. Aún falta comprobar la
+  presentación de `help <categoria>` y `help <comando>` tras este rediseño.
 
 ### 2026-10-21 — E12: consolidación documental y portafolio (en curso)
 
