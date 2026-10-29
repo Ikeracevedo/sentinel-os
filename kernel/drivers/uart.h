@@ -20,6 +20,7 @@ int uart_frame_write(const uint8_t *bytes, uint16_t length);
 uint32_t uart_frame_free(void);
 uint16_t uart_log_read(uint8_t *out, uint16_t capacity);
 uint32_t uart_log_dropped(void);
+uint32_t uart_log_pending(void);
 void uart_tx_isr(void);
 
 #endif

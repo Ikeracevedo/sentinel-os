@@ -4,6 +4,7 @@
 #endif
 #if SENTINEL_TRANSPORT
 #include "../arch/xtensa/cpu.h"
+#include <sentinel/task.h>
 #endif
 
 #define UART_FIFO_REG     (*(volatile uint32_t *)0x3ff40000)
@@ -32,7 +33,7 @@
 
 #define TX_CAPACITY  2048u
 #define TX_MASK      (TX_CAPACITY - 1u)
-#define LOG_CAPACITY 512u
+#define LOG_CAPACITY 4096u
 #define LOG_MASK     (LOG_CAPACITY - 1u)
 
 static uint8_t g_tx_ring[TX_CAPACITY];
@@ -103,17 +104,32 @@ uint32_t uart_tx_count(void) {
 void uart_putc(char c) {
 #if SENTINEL_TRANSPORT
     if (g_frame_mode) {
-        uint32_t ps = irq_disable();
-        uint32_t head = g_log_head;
-        if (head - g_log_tail < LOG_CAPACITY) {
-            g_log_ring[head & LOG_MASK] = (uint8_t)c;
-            __atomic_thread_fence(__ATOMIC_RELEASE);
-            g_log_head = head + 1u;
-        } else {
-            g_log_dropped++;
+        /* El shell puede producir `help` completo antes de que el tracer
+         * vuelva a ejecutarse. Perder texto de una consola es peor que
+         * retrasar brevemente su impresion: en contexto de tarea cedemos la
+         * CPU un tick para que el tracer drene la cola. Nunca esperamos
+         * dentro de una IRQ o de una seccion critica, donde bloquear
+         * comprometeria el scheduler. */
+        for (;;) {
+            uint32_t ps = irq_disable();
+            uint32_t head = g_log_head;
+            if (head - g_log_tail < LOG_CAPACITY) {
+                g_log_ring[head & LOG_MASK] = (uint8_t)c;
+                __atomic_thread_fence(__ATOMIC_RELEASE);
+                g_log_head = head + 1u;
+                irq_restore(ps);
+                return;
+            }
+            irq_restore(ps);
+            if ((ps & 0x0Fu) != 0u) {
+                g_log_dropped++;
+                return;
+            }
+            /* No hacer busy-wait: shell (p4) tendria prioridad sobre tracer
+             * (p6) y le impediria liberar espacio. Al dormir queda BLOCKED y
+             * el planificador puede ejecutar al consumidor de la cola. */
+            task_sleep(1u);
         }
-        irq_restore(ps);
-        return;
     }
 #endif
     while (((UART_STATUS_REG >> 16) & 0xFFu) >= (UART_FIFO_LEN - UART_FIFO_MARGIN)) {
@@ -187,6 +203,10 @@ uint16_t uart_log_read(uint8_t *out, uint16_t capacity) {
 
 uint32_t uart_log_dropped(void) {
     return g_log_dropped;
+}
+
+uint32_t uart_log_pending(void) {
+    return g_log_head - g_log_tail;
 }
 
 void uart_tx_isr(void) {

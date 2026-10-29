@@ -5,12 +5,14 @@ import struct
 import sys
 import tempfile
 import unittest
+import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from bridge import (ALERT, Bridge, CycleClock, Decoder, EVENT, FRAME_ALERT,
-                    FRAME_EVENTS, FRAME_HELLO, FRAME_LOG, FRAME_STATS, STATS, SqliteSink,
-                    crc16, encode_frame)
+from bridge import (ALERT, Bridge, CycleClock, DashboardState, Decoder, EVENT, FRAME_ALERT,
+                    FRAME_EVENTS, FRAME_HELLO, FRAME_LOG, FRAME_STATS, FRAME_TASKS, STATS,
+                    TASK, SqliteSink, crc16, encode_frame, shell_command_payload,
+                    start_dashboard)
 
 
 class ProtocolTests(unittest.TestCase):
@@ -138,8 +140,62 @@ class ProtocolTests(unittest.TestCase):
         self.assertFalse(bridge.shell_ready)
         bridge.feed(encode_frame(FRAME_LOG, 2, b"iker$ "))
         self.assertTrue(bridge.shell_ready)
+
+    def test_shell_command_waits_for_next_prompt(self):
+        bridge = Bridge()
+        bridge.feed(encode_frame(FRAME_LOG, 1, b"sentinel:/home/iker$ "))
+        self.assertTrue(bridge.shell_ready)
+        bridge.shell_command_sent()
+        self.assertFalse(bridge.shell_ready)
+        bridge.feed(encode_frame(FRAME_LOG, 2, b"salida parcial\r\n"))
+        self.assertFalse(bridge.shell_ready)
+        bridge.feed(encode_frame(FRAME_LOG, 3, b"sentinel:/home/iker$ "))
+        self.assertTrue(bridge.shell_ready)
         bridge.feed(encode_frame(FRAME_HELLO, 0, b"\x01nuevo"))
         self.assertFalse(bridge.shell_ready)
+
+    def test_empty_terminal_line_has_a_valid_shell_payload(self):
+        self.assertEqual(shell_command_payload(""), b" ")
+        self.assertEqual(shell_command_payload("   \t"), b" ")
+        self.assertEqual(shell_command_payload("ps -v"), b"ps -v")
+
+    def test_dashboard_state_reconstructs_task_and_cpu_interval(self):
+        state = DashboardState()
+        bridge = Bridge([state])
+        task_rows = bytearray(16 * TASK.size)
+        for index in range(16):
+            TASK.pack_into(task_rows, index * TASK.size,
+                           0xFF, 0, 0, 0, 0, 0, 0, b"\0" * 16)
+        TASK.pack_into(task_rows, 0, 4, 2, 5, 0, 200, 123, 256,
+                       b"counter\0".ljust(16, b"\0"))
+        bridge.feed(encode_frame(FRAME_TASKS, 1, bytes(task_rows)))
+        bridge.feed(encode_frame(FRAME_EVENTS, 2,
+                                 EVENT.pack(4000, 0x02, 4, 1, 0, 0)))
+        bridge.feed(encode_frame(FRAME_EVENTS, 3,
+                                 EVENT.pack(8000, 0x01, 4, 2, 5, 1)))
+        bridge.feed(encode_frame(FRAME_EVENTS, 4,
+                                 EVENT.pack(9000, 0x61, 1, 3, 10, 200)))
+        snapshot = state.snapshot()
+        self.assertEqual(snapshot["tasks"][0]["name"], "counter")
+        self.assertEqual(snapshot["tasks"][0]["quantum_ms"], 200)
+        self.assertEqual(snapshot["timeline"][0]["tid"], 4)
+        self.assertEqual(snapshot["timeline"][0]["end_us"] -
+                         snapshot["timeline"][0]["start_us"], 100)
+        self.assertEqual(snapshot["markers"][0]["label"], "slice 10 → 200 ms")
+
+    def test_dashboard_serves_page_and_json_without_external_dependencies(self):
+        state = DashboardState()
+        server = start_dashboard(state, "127.0.0.1", 0)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urllib.request.urlopen(base + "/", timeout=2) as response:
+                self.assertIn(b"Sentinel OS", response.read())
+            with urllib.request.urlopen(base + "/api/state", timeout=2) as response:
+                payload = response.read().decode("utf-8")
+                self.assertIn('"timeline":[]', payload)
+        finally:
+            server.shutdown()
+            server.server_close()
 
 
 if __name__ == "__main__":

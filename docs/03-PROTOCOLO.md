@@ -84,6 +84,7 @@ Overhead: 10 bytes por trama
 | `0x04` | `FRAME_ALERT` | Alerta generada en el dispositivo (ej. deadlock detectado) |
 | `0x05` | `FRAME_HELLO` | Identificación al arrancar: versión, build, config |
 | `0x06` | `FRAME_HEARTBEAT` | Latido vacío. Presencia de vida. |
+| `0x07` | `FRAME_TASKS` | Foto de las 16 ranuras de tareas para el dashboard. |
 
 ### Descendentes (host → ESP32)
 
@@ -153,6 +154,13 @@ typedef struct __attribute__((packed)) {
 
 Se emite cada 1 s. Es el latido "rico" del sistema: aunque se pierdan eventos individuales,
 las estadísticas agregadas siempre llegan.
+
+### `FRAME_TASKS` (v1)
+
+Se emite junto a `FRAME_STATS`, una vez por segundo. Contiene 16 entradas de 32 B,
+una por ranura del scheduler: `tid`, estado, prioridad, quantum, CPU acumulada,
+heap atribuido y nombre. Una entrada con `tid = 0xff` está libre. Esta foto permite
+que el dashboard rotule el Gantt con nombres reales sin inferirlos de texto del shell.
 
 ---
 

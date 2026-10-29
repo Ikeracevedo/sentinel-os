@@ -108,6 +108,10 @@ static downlink_parser_t g_downlink;
 static uint8_t g_command[SHELL_LINE_MAX];
 static uint16_t g_command_len;
 static uint16_t g_command_pos;
+/* Las lineas llegadas en FRAME_CMD ya fueron mostradas por el terminal del
+ * host. No repetir su eco hace que bridge.py se sienta como una terminal
+ * normal, sin duplicar cada comando. */
+static uint8_t g_input_from_frame;
 
 static int apply_trace_cfg(const downlink_frame_t *frame) {
     const uint8_t *p = frame->payload;
@@ -144,12 +148,14 @@ static int shell_getc(void) {
     for (;;) {
 #if SENTINEL_TRANSPORT
         if (g_command_pos < g_command_len) {
+            g_input_from_frame = 1u;
             return g_command[g_command_pos++];
         }
 #endif
         sem_wait(&g_rx_sem);                /* BLOCKED hasta que llegue un byte */
         int c = g_rx[g_rx_tail];
         g_rx_tail = (g_rx_tail + 1u) % RX_RING;
+        g_input_from_frame = 0u;
 #if SENTINEL_TRANSPORT
         downlink_frame_t frame;
         uint32_t crc_errors_before = g_downlink.crc_errors;
@@ -249,6 +255,11 @@ static uint32_t read_line(char *buf) {
 
     for (;;) {
         int c = shell_getc();
+#if SENTINEL_TRANSPORT
+        int from_frame = g_input_from_frame != 0u;
+#else
+        int from_frame = 0;
+#endif
 
         if (esc == 1) {
             esc = (c == '[') ? 2 : 0;
@@ -290,6 +301,10 @@ static uint32_t read_line(char *buf) {
                 continue;                   /* el \n de un "\r\n" */
             }
             last_was_cr = (c == '\r');
+            /* El bridge de Windows deja que la ESP32 emita el salto de linea.
+             * Asi cada Enter queda unido atomicamente a su prompt remoto y
+             * varios Enter no terminan con prompts pegados en una misma fila.
+             * Solo se suprime el eco de los caracteres, no el CR/LF. */
             kprintf("\r\n");
             buf[len] = '\0';
             return len;
@@ -310,7 +325,9 @@ static uint32_t read_line(char *buf) {
             if (len + 1u < SHELL_LINE_MAX) {
                 buf[len++] = (char)c;
                 buf[len] = '\0';
-                uart_putc((char)c);
+                if (!from_frame) {
+                    uart_putc((char)c);
+                }
             }                               /* si esta llena, se ignora (sin desbordar) */
         }
     }

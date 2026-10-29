@@ -6,11 +6,19 @@ El decodificador y el modo replay no necesitan hardware ni dependencias externas
 from __future__ import annotations
 
 import argparse
+import _thread
+import json
+import os
+import queue
 import sqlite3
 import struct
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Iterable
 
@@ -23,6 +31,7 @@ FRAME_LOG = 0x03
 FRAME_ALERT = 0x04
 FRAME_HELLO = 0x05
 FRAME_HEARTBEAT = 0x06
+FRAME_TASKS = 0x07
 FRAME_CMD = 0x81
 FRAME_TRACE_CFG = 0x82
 TRACE_ENABLE = 0x01
@@ -32,6 +41,21 @@ EVENT = struct.Struct("<IBBHII")
 HEADER = struct.Struct("<BBHH")
 STATS = struct.Struct("<QIIIIHHIIIIIIBBBB")
 ALERT = struct.Struct("<BBBBIIIII48s")
+TASK = struct.Struct("<BBBBIII16s")
+TASK_STATES = ("UNUSED", "READY", "RUNNING", "BLOCKED", "SLEEPING",
+               "SUSPENDED", "TERMINATED")
+
+
+# La entrada y la salida de una consola interactiva ocurren en hilos
+# diferentes. Un unico cerrojo evita que un prompt recibido de la ESP32 quede
+# intercalado entre los caracteres que el usuario esta escribiendo.
+_CONSOLE_LOCK = threading.RLock()
+
+
+def console_write(text: str) -> None:
+    with _CONSOLE_LOCK:
+        sys.stdout.write(text)
+        sys.stdout.flush()
 ALERT_SEVERITIES = ("INFO", "WARN", "CRIT")
 ALERT_TYPES = {1: "DEADLOCK", 2: "FRAGMENTACION", 3: "INANICION",
                4: "INVERSION", 5: "JITTER"}
@@ -153,7 +177,7 @@ class Sink:
 class ConsoleSink(Sink):
     def write(self, kind: str, data: dict) -> None:
         if kind == "log":
-            print(data["text"], end="", flush=True)
+            console_write(data["text"])
         elif kind in ("hello", "alert"):
             print(f"[{kind}] {data}", file=sys.stderr)
 
@@ -267,6 +291,212 @@ class SqliteSink(Sink):
         self.db.close()
 
 
+class DashboardState(Sink):
+    """Vista acotada y segura de la telemetría para el navegador local.
+
+    El bridge sigue siendo el único consumidor del puerto serie. El servidor HTTP
+    solo expone copias JSON: nunca recibe comandos ni controla la placa.
+    """
+
+    def __init__(self, window_us: int = 60_000_000) -> None:
+        self.lock = threading.Lock()
+        self.window_us = window_us
+        self.tasks: dict[int, dict] = {}
+        self.timeline: deque[dict] = deque()
+        self.running_since: dict[int, int] = {}
+        self.markers: deque[dict] = deque(maxlen=128)
+        self.alerts: deque[dict] = deque(maxlen=16)
+        self.stats: dict = {}
+        self.last_heartbeat = 0.0
+        self.last_event_us = 0
+        self.started_at = time.monotonic()
+
+    @staticmethod
+    def _state_name(value: int) -> str:
+        return TASK_STATES[value] if 0 <= value < len(TASK_STATES) else "?"
+
+    def _trim_timeline(self) -> None:
+        cutoff = self.last_event_us - self.window_us
+        while self.timeline and self.timeline[0]["end_us"] < cutoff:
+            self.timeline.popleft()
+        while self.markers and self.markers[0]["at_us"] < cutoff:
+            self.markers.popleft()
+
+    def write(self, kind: str, data: dict) -> None:
+        with self.lock:
+            if kind == "hello":
+                self.tasks.clear()
+                self.timeline.clear()
+                self.running_since.clear()
+                self.markers.clear()
+                self.alerts.clear()
+                self.stats.clear()
+                self.last_event_us = 0
+                self.last_heartbeat = time.monotonic()
+            elif kind == "tasks":
+                self.tasks = {task["tid"]: task for task in data["tasks"]}
+            elif kind == "stats":
+                self.stats = dict(data)
+            elif kind == "heartbeat":
+                self.last_heartbeat = time.monotonic()
+            elif kind == "alert":
+                self.alerts.append(dict(data))
+            elif kind != "event":
+                return
+
+            if kind != "event":
+                return
+            event_type = data["type"]
+            tid = data["tid"]
+            now_us = data["t_abs_us"]
+            self.last_event_us = max(self.last_event_us, now_us)
+            if event_type == 0x02:  # EV_SWITCH_IN
+                self.running_since[tid] = now_us
+            elif event_type == 0x01:  # EV_SWITCH_OUT
+                start_us = self.running_since.pop(tid, None)
+                if start_us is not None and now_us >= start_us:
+                    self.timeline.append({"tid": tid, "start_us": start_us,
+                                          "end_us": now_us,
+                                          "reason": data["arg1"]})
+            elif event_type == 0x30:  # EV_TASK_CREATE
+                self.markers.append({"at_us": now_us, "kind": "run",
+                                     "tid": tid, "label": f"TID {tid} creado"})
+            elif event_type == 0x31:  # EV_TASK_EXIT
+                self.markers.append({"at_us": now_us, "kind": "kill",
+                                     "tid": tid, "label": f"TID {tid} terminado"})
+                self.running_since.pop(tid, None)
+            elif event_type == 0x61:  # EV_SLICE_CHANGE
+                self.markers.append({"at_us": now_us, "kind": "slice", "tid": tid,
+                                     "label": f"slice {data['arg0']} → {data['arg1']} ms",
+                                     "quantum_ms": data["arg1"]})
+            self._trim_timeline()
+
+    def snapshot(self) -> dict:
+        with self.lock:
+            now_us = self.last_event_us
+            connected = time.monotonic() - self.last_heartbeat < 2.5
+            return {"connected": connected, "age_ms": int((time.monotonic() -
+                    self.last_heartbeat) * 1000) if self.last_heartbeat else None,
+                    "now_us": now_us, "window_us": self.window_us,
+                    "tasks": sorted((dict(task) for task in self.tasks.values()),
+                                    key=lambda task: task["tid"]),
+                    "timeline": list(self.timeline), "markers": list(self.markers),
+                    "stats": dict(self.stats), "alerts": list(self.alerts)}
+
+
+class DashboardServer(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def __init__(self, address: tuple[str, int], state: DashboardState,
+                 page: bytes) -> None:
+        self.state = state
+        self.page = page
+        super().__init__(address, DashboardHandler)
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802 - nombre impuesto por BaseHTTPRequestHandler
+        if self.path == "/":
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(self.server.page)
+            return
+        if self.path == "/api/state":
+            payload = json.dumps(self.server.state.snapshot(), separators=(",", ":")).encode()
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Ruta no encontrada")
+
+    def log_message(self, _format: str, *_args: object) -> None:
+        """El polling del navegador no debe llenar la consola del bridge."""
+
+
+def start_dashboard(state: DashboardState, host: str, port: int) -> DashboardServer:
+    page = (Path(__file__).with_name("dashboard.html").read_bytes())
+    server = DashboardServer((host, port), state, page)
+    threading.Thread(target=server.serve_forever, daemon=True,
+                     name="sentinel-dashboard").start()
+    return server
+
+
+def start_shell_input() -> queue.Queue[str]:
+    """Lee comandos humanos sin bloquear el bucle que recibe la telemetría."""
+    commands: queue.Queue[str] = queue.Queue()
+
+    def windows_reader() -> None:
+        """Dibuja la linea local sin el eco diferido de Windows.
+
+        El modo de linea estandar deja a Windows hacer eco mientras la ESP32
+        responde asincronamente. Eso podia unir ``help`` con un prompt remoto.
+        Aqui el bridge controla caracteres y salto de linea, como un terminal.
+        """
+        import msvcrt
+
+        line: list[str] = []
+        while True:
+            char = msvcrt.getwch()
+            if char == "\x03":
+                # getwch() consume Ctrl+C como caracter, a diferencia de
+                # sys.stdin. Interrumpimos el hilo principal para que el
+                # bloque finally cierre COM y SQLite ordenadamente.
+                console_write("^C\r\n")
+                _thread.interrupt_main()
+                return
+            if char in ("\r", "\n"):
+                # La ESP32 emite CR/LF antes de su prompt. No dibujarlo aqui:
+                # al llegar ambos juntos evitamos filas vacias y prompts
+                # concatenados cuando el usuario pulsa Enter varias veces.
+                commands.put("".join(line))
+                line.clear()
+            elif char in ("\x08", "\x7f"):
+                if line:
+                    line.pop()
+                    console_write("\b \b")
+            elif char in ("\x00", "\xe0"):
+                # Consumir flechas y otras teclas extendidas: no son ordenes
+                # ASCII validas para FRAME_CMD.
+                msvcrt.getwch()
+            elif " " <= char <= "~":
+                line.append(char)
+                console_write(char)
+
+    def reader() -> None:
+        if os.name == "nt" and sys.stdin.isatty():
+            windows_reader()
+            return
+        for line in sys.stdin:
+            # Conservar Enter vacio: el shell remoto debe comportarse como
+            # una terminal, mostrando un nuevo prompt en vez de parecer
+            # bloqueado. Solo quitamos el fin de linea del terminal host.
+            commands.put(line.rstrip("\r\n"))
+
+    threading.Thread(target=reader, daemon=True, name="sentinel-shell-input").start()
+    return commands
+
+
+def shell_command_payload(command: str) -> bytes:
+    """Convierte una linea local en una orden valida para el shell remoto.
+
+    FRAME_CMD no acepta payload vacio. Un espacio es semanticamente una linea
+    vacia para el parser del shell, pero hace que este produzca el proximo
+    prompt como lo haria Bash al pulsar Enter.
+    """
+    wire_command = command if command.strip() else " "
+    try:
+        payload = wire_command.encode("ascii")
+    except UnicodeEncodeError as exc:
+        raise ValueError("el comando debe contener solo ASCII") from exc
+    if not 1 <= len(payload) <= 127 or any(b < 0x20 or b > 0x7E for b in payload):
+        raise ValueError("comando invalido (1..127 ASCII imprimibles)")
+    return payload
+
+
 class Bridge:
     def __init__(self, sinks: Iterable[Sink] = ()) -> None:
         self.decoder = Decoder()
@@ -281,6 +511,17 @@ class Bridge:
     def publish(self, kind: str, data: dict) -> None:
         for sink in self.sinks:
             sink.write(kind, data)
+
+    def shell_command_sent(self) -> None:
+        """Marca el shell como ocupado hasta observar su siguiente prompt.
+
+        El shell de la ESP32 ejecuta una linea cada vez.  Sin esta barrera un
+        usuario podia escribir `help`, `ps` y `stats` rapidamente; el bridge
+        transmitia las tres tramas seguidas y las salidas largas competian por
+        la cola UART.  El prompt de vuelta es nuestro acuse de recibo natural.
+        """
+        self.shell_ready = False
+        self.log_tail = ""
 
     def feed(self, chunk: bytes) -> None:
         self.publish("raw", {"bytes": chunk})
@@ -321,6 +562,18 @@ class Bridge:
                 self.dropped_device = max(self.dropped_device,
                                           data["events_dropped"])
                 self.publish("stats", data)
+            elif frame.kind == FRAME_TASKS and len(p) == 16 * TASK.size:
+                tasks = []
+                for values in TASK.iter_unpack(p):
+                    tid, state, priority, _reserved, quantum, cpu_low, heap, raw_name = values
+                    if tid == 0xFF:
+                        continue
+                    name = raw_name.split(b"\x00", 1)[0].decode("ascii", "replace")
+                    tasks.append({"tid": tid, "name": name or f"tarea-{tid}",
+                                  "state": TASK_STATES[state] if state < len(TASK_STATES) else "?",
+                                  "priority": priority, "quantum_ms": quantum,
+                                  "cpu_cycles_low": cpu_low, "heap_bytes": heap})
+                self.publish("tasks", {"tasks": tasks})
             elif frame.kind == FRAME_ALERT and len(p) == ALERT.size and p[0] == 1:
                 version, severity, alert_type, _reserved, sequence, timestamp_ms, \
                     data0, data1, data2, message = ALERT.unpack(p)
@@ -366,6 +619,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sink", choices=("console", "sqlite"), action="append")
     ap.add_argument("--db", default="sentinel.db")
     ap.add_argument("--record", help="Grabar bytes crudos")
+    ap.add_argument("--serve", type=int, metavar="PUERTO",
+                    help="Publicar el dashboard local en http://127.0.0.1:PUERTO")
     action = ap.add_mutually_exclusive_group()
     action.add_argument("--cmd", help="Enviar comando al shell remoto")
     action.add_argument("--trace-enable", choices=("on", "off"),
@@ -374,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Activar o desactivar un tipo de evento (ej. 0x01 on)")
     action.add_argument("--trace-sample", type=int, metavar="N",
                         help="Muestreo 1 de N para cambios de tarea (1..65535)")
+    ap.add_argument("--shell", action="store_true",
+                    help="Reenviar al SO los comandos escritos en esta terminal")
     ap.add_argument("--reset", action="store_true",
                     help="Reiniciar ESP32 al abrir el puerto para capturar HELLO")
     ap.add_argument("--stats", action="store_true", help="Mostrar contadores cada 5 s")
@@ -388,6 +645,10 @@ def main(argv: list[str] | None = None) -> int:
         ap.error("--reset requiere --port")
     if args.duration is not None and (not args.port or args.duration <= 0):
         ap.error("--duration requiere --port y un numero positivo de segundos")
+    if args.serve is not None and not 1 <= args.serve <= 65535:
+        ap.error("--serve requiere un puerto entre 1 y 65535")
+    if args.shell and not args.port:
+        ap.error("--shell requiere --port")
     outbound = None
     if args.cmd is not None:
         try:
@@ -416,15 +677,31 @@ def main(argv: list[str] | None = None) -> int:
         payload = bytes((TRACE_SAMPLE, args.trace_sample & 0xFF,
                          args.trace_sample >> 8))
         outbound = encode_frame(FRAME_TRACE_CFG, 0, payload)
+    # Una sesion interactiva debe mostrar las respuestas del SO.  SQLite es
+    # almacenamiento, no una consola; por eso --shell conserva ConsoleSink
+    # aunque el usuario tambien solicite --sink sqlite.
+    sink_choices = list(args.sink or ["console"])
+    if args.shell and "console" not in sink_choices:
+        sink_choices.insert(0, "console")
     sinks: list[Sink] = []
-    for choice in args.sink or ["console"]:
+    for choice in sink_choices:
         sinks.append(SqliteSink(args.db) if choice == "sqlite" else ConsoleSink())
     if args.record:
         sinks.append(FileSink(args.record))
+    dashboard = None
+    dashboard_server = None
+    if args.serve is not None:
+        dashboard = DashboardState()
+        sinks.append(dashboard)
     bridge = Bridge(sinks)
     stream = None
     outbound_at = None
+    shell_commands = start_shell_input() if args.shell else None
+    outbound_seq = 1
     try:
+        if dashboard is not None:
+            dashboard_server = start_dashboard(dashboard, "127.0.0.1", args.serve)
+            print(f"dashboard: http://127.0.0.1:{args.serve}", file=sys.stderr)
         if args.port:
             try:
                 import serial
@@ -432,7 +709,11 @@ def main(argv: list[str] | None = None) -> int:
                 raise SystemExit("Falta pyserial: python3 -m pip install pyserial") from exc
             # Configurar DTR/RTS antes de abrir COM: una conexion para --cmd
             # no debe reiniciar accidentalmente el ESP32.
-            stream = serial.Serial(port=None, baudrate=args.baud, timeout=0.5)
+            # La consola interactiva debe reaccionar al Enter humano sin la
+            # pausa perceptible del timeout anterior de 500 ms. Los frames
+            # siguen llegando por bloques; 10 ms conserva CPU para el
+            # dashboard y hace que Enter se sienta inmediato.
+            stream = serial.Serial(port=None, baudrate=args.baud, timeout=0.01)
             stream.dtr = False
             stream.rts = False
             stream.port = args.port
@@ -462,6 +743,20 @@ def main(argv: list[str] | None = None) -> int:
                                          (outbound_at is not None and now >= outbound_at)):
                 stream.write(outbound)
                 outbound = None
+            if shell_commands is not None and bridge.shell_ready:
+                try:
+                    command = shell_commands.get_nowait()
+                except queue.Empty:
+                    command = None
+                if command is not None:
+                    try:
+                        payload = shell_command_payload(command)
+                    except ValueError as exc:
+                        print(f"bridge: {exc}", file=sys.stderr)
+                        continue
+                    stream.write(encode_frame(FRAME_CMD, outbound_seq, payload))
+                    outbound_seq = (outbound_seq + 1) & 0xFFFF
+                    bridge.shell_command_sent()
             if deadline is not None and now >= deadline:
                 break
             if args.stats and now - last_report >= 5:
@@ -473,6 +768,9 @@ def main(argv: list[str] | None = None) -> int:
         if stream is not None:
             stream.close()
         bridge.close()
+        if dashboard_server is not None:
+            dashboard_server.shutdown()
+            dashboard_server.server_close()
     print(bridge.report(), file=sys.stderr)
     return 0
 

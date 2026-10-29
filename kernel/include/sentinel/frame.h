@@ -32,6 +32,8 @@ enum {
     FRAME_ALERT     = 0x04,
     FRAME_HELLO     = 0x05,
     FRAME_HEARTBEAT = 0x06,
+    /* Foto compacta de las tareas para el dashboard local. */
+    FRAME_TASKS     = 0x07,
     FRAME_CMD       = 0x81,
     FRAME_TRACE_CFG = 0x82,
     FRAME_ACK       = 0x83

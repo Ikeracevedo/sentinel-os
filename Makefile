@@ -10,6 +10,11 @@ BUILD    := build
 ifeq ($(TRACE),0)
 BUILD    := build/trace-off
 endif
+ifeq ($(TRANSPORT),1)
+# El transporte agrega fuentes y cambia el baudrate. Usa su propia carpeta para
+# que un `make flash` normal nunca enlace objetos compilados para otro modo.
+BUILD    := build/transport
+endif
 TARGET   := $(BUILD)/kernel
 
 PORT     := $(or $(lastword $(sort $(wildcard /dev/ttyUSB*))),/dev/ttyUSB0)
@@ -124,7 +129,7 @@ endif
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 -include $(OBJS:.o=.d)
 
-.PHONY: all clean flash monitor size test
+.PHONY: all clean flash flash-transport monitor size test
 
 all: $(TARGET).elf $(TARGET).bin
 
@@ -150,6 +155,11 @@ size: $(TARGET).elf
 flash: all
 	$(ESPTOOL) --chip esp32 --port $(PORT) --baud $(BAUD) \
 		write_flash $(FLASH_ADDR) $(TARGET).bin
+
+# Atajo seguro para la imagen que alimenta bridge.py y el dashboard. Mantiene
+# TRANSPORT=1 durante compilacion, enlace y flasheo.
+flash-transport:
+	$(MAKE) TRANSPORT=1 flash PORT=$(PORT)
 
 monitor:
 	python3 -m serial.tools.miniterm $(PORT) 57600 -f direct
