@@ -1,0 +1,2 @@
+session,timestamp_utc,commit,git_dirty,variant,profile,run,duration_s,rounds,switches,quantum,block,yield,preempt,exit,stats_samples,uart_bytes,crc_errors,frame_gaps,event_seq_missing,device_dropped,status
+20261021T030558Z,2026-10-21T03:06:08.112150+00:00,c3de95c6fee2d944f5ae9c338041365874bd6f45,true,trace-on,switchbench,1,5.0,88,1206,57,586,80,483,0,5,45056,0,0,0,0,PASS

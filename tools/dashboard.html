@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel OS — Monitor local</title>
+<style>
+:root { color-scheme: dark; --bg:#10151d; --panel:#18212d; --line:#354456; --text:#edf4fb; --muted:#9eafc2; --good:#54d38a; --bad:#ff7272; }
+* { box-sizing:border-box; } body { margin:0; background:var(--bg); color:var(--text); font:16px system-ui,sans-serif; }
+header { display:flex; align-items:center; justify-content:space-between; padding:18px 24px; background:#121b26; border-bottom:1px solid var(--line); }
+h1 { margin:0; font-size:24px; } #status { font-weight:700; } .ok { color:var(--good); } .bad { color:var(--bad); }
+main { padding:18px 24px; display:grid; gap:16px; } .metrics { display:grid; grid-template-columns:repeat(5,minmax(130px,1fr)); gap:12px; }
+.card, .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; } .card b { display:block; font-size:24px; margin-top:5px; }
+.card span, .hint { color:var(--muted); font-size:13px; } .panel { padding:16px; } h2 { margin:0 0 12px; font-size:18px; }
+canvas { width:100%; height:500px; border:1px solid var(--line); border-radius:4px; background:#0d131b; } #legend { display:flex; gap:14px; flex-wrap:wrap; margin-top:10px; }
+.legend-item { font-size:14px; } .dot { display:inline-block; width:12px; height:12px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+table { width:100%; border-collapse:collapse; } th,td { text-align:left; padding:8px; border-bottom:1px solid var(--line); } th { color:var(--muted); font-weight:600; }
+#alerts { min-height:24px; color:var(--muted); } @media (max-width:900px) { .metrics { grid-template-columns:repeat(2,1fr); } canvas { height:420px; } }
+</style>
+</head>
+<body>
+<header><div><h1>Sentinel OS — Monitor local</h1><div class="hint">Telemetría UART procesada localmente; sin Internet.</div></div><div id="status" class="bad">● esperando ESP32</div></header>
+<main>
+  <section class="metrics">
+    <div class="card"><span>Quantum actual</span><b id="quantum">—</b></div>
+    <div class="card"><span>Cambios de contexto</span><b id="switches">—</b></div>
+    <div class="card"><span>CPU ociosa</span><b id="idle">—</b></div>
+    <div class="card"><span>Heap libre</span><b id="heap">—</b></div>
+    <div class="card"><span>Eventos perdidos</span><b id="dropped">—</b></div>
+  </section>
+  <section class="panel"><h2>Planificación — Gantt de CPU</h2><canvas id="gantt"></canvas><div id="legend"></div><p class="hint">Cada barra sólida representa un intervalo ejecutando CPU. Líneas: creación, finalización y cambios de quantum.</p></section>
+  <section class="panel"><h2>Tareas actuales</h2><table><thead><tr><th>TID</th><th>Nombre</th><th>Estado</th><th>PRI</th><th>Quantum</th><th>Heap</th></tr></thead><tbody id="tasks"></tbody></table></section>
+  <section class="panel"><h2>Alertas</h2><div id="alerts">Sin alertas recibidas.</div></section>
+</main>
+<script>
+const palette=['#4cc9f0','#f72585','#b9fbc0','#ffd166','#c77dff','#ff9f1c','#80ed99','#f28482','#90dbf4','#a3b18a'];
+const color=tid=>palette[tid%palette.length]; const q=id=>document.getElementById(id);
+function metric(id,value){q(id).textContent=value??'—'}
+function draw(data){
+  const canvas=q('gantt'), dpr=devicePixelRatio||1, width=canvas.clientWidth, height=canvas.clientHeight;
+  canvas.width=width*dpr; canvas.height=height*dpr; const c=canvas.getContext('2d'); c.scale(dpr,dpr); c.clearRect(0,0,width,height);
+  const tasks=data.tasks.filter(t=>t.state!=='UNUSED'); const now=data.now_us||0, window=data.window_us||60000000, start=Math.max(0,now-window);
+  const left=135, top=34, row=tasks.length?Math.max(34,Math.floor((height-top-30)/tasks.length)):34, plotW=width-left-15;
+  c.font='13px system-ui'; c.fillStyle='#9eafc2'; c.fillText('últimos '+(window/1000000)+' s',left,20);
+  for(let tick=0;tick<=6;tick++){const x=left+plotW*tick/6; c.strokeStyle='#263342'; c.beginPath();c.moveTo(x,top);c.lineTo(x,height-22);c.stroke();c.fillStyle='#9eafc2';c.fillText(((start+(window*tick/6))/1000000).toFixed(1)+' s',x-12,height-6)}
+  tasks.forEach((t,i)=>{const y=top+i*row; c.fillStyle='#bfcddd'; c.fillText('['+t.tid+'] '+t.name,left-128,y+row*.65); c.strokeStyle='#263342';c.beginPath();c.moveTo(left,y+row);c.lineTo(width-15,y+row);c.stroke()});
+  const index=new Map(tasks.map((t,i)=>[t.tid,i]));
+  for(const item of data.timeline){const i=index.get(item.tid); if(i===undefined||item.end_us<start)continue; const x=left+Math.max(0,item.start_us-start)*plotW/window;const end=left+Math.min(window,item.end_us-start)*plotW/window; c.fillStyle=color(item.tid);c.fillRect(x,top+i*row+7,Math.max(1,end-x),row-14)}
+  for(const marker of data.markers){if(marker.at_us<start)continue;const x=left+(marker.at_us-start)*plotW/window;c.strokeStyle=marker.kind==='slice'?'#ffffff':'#ffcf56';c.setLineDash([4,4]);c.beginPath();c.moveTo(x,top);c.lineTo(x,height-22);c.stroke();c.setLineDash([]);c.fillStyle='#dce8f5';c.fillText(marker.label,x+3,top+12)}
+  q('legend').innerHTML=tasks.map(t=>'<span class="legend-item"><i class="dot" style="background:'+color(t.tid)+'"></i>['+t.tid+'] '+t.name+'</span>').join('');
+}
+function render(data){
+  const s=data.stats||{}, tasks=data.tasks||[]; const current=tasks.find(t=>t.state==='RUNNING');
+  q('status').className=data.connected?'ok':'bad';q('status').textContent=data.connected?'● ESP32 conectada':'● esperando ESP32';
+  metric('quantum',current?(current.quantum_ms+' ms'):'—');metric('switches',s.switch_count?.toLocaleString());metric('idle',s.cpu_idle_pct===undefined?null:s.cpu_idle_pct+' %');metric('heap',s.heap_free===undefined?null:s.heap_free.toLocaleString()+' B');metric('dropped',s.events_dropped?.toLocaleString());
+  q('tasks').innerHTML=tasks.map(t=>'<tr><td>'+t.tid+'</td><td>'+t.name+'</td><td>'+t.state+'</td><td>'+t.priority+'</td><td>'+t.quantum_ms+' ms</td><td>'+t.heap_bytes+' B</td></tr>').join('');
+  q('alerts').innerHTML=(data.alerts||[]).length?data.alerts.map(a=>'<div>'+a.text+'</div>').join(''):'Sin alertas recibidas.'; draw(data);
+}
+async function poll(){try{render(await (await fetch('/api/state',{cache:'no-store'})).json())}catch(e){q('status').className='bad';q('status').textContent='● dashboard sin bridge'}} poll();setInterval(poll,500);
+</script>
+</body></html>

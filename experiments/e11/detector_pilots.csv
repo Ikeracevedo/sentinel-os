@@ -1,0 +1,2 @@
+session,timestamp_utc,commit,git_dirty,variant,scenario,run,injected_cycles,alert_cycles,delay_us,detector_checks,detector_alerts_delta,last_cost_cycles,max_cost_cycles,crc_errors_delta,frame_gaps_delta,dropped_device_delta,uart_bytes,status,error
+20261021T040547Z,2026-10-21T04:05:48.581734+00:00,7142029e0c85855c3bf07ec494c445304205db88,true,trace-on,deadlock-2,1,123334984,142828075,487327,4,1,2042,2459,0,0,0,57344,PASS,

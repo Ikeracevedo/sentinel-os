@@ -10,6 +10,11 @@ BUILD    := build
 ifeq ($(TRACE),0)
 BUILD    := build/trace-off
 endif
+ifeq ($(TRANSPORT),1)
+# El transporte agrega fuentes y cambia el baudrate. Usa su propia carpeta para
+# que un `make flash` normal nunca enlace objetos compilados para otro modo.
+BUILD    := build/transport
+endif
 TARGET   := $(BUILD)/kernel
 
 PORT     := $(or $(lastword $(sort $(wildcard /dev/ttyUSB*))),/dev/ttyUSB0)
@@ -53,6 +58,16 @@ SRCS_C += tests/test_trace_sched_board.c
 LDFLAGS += -Wl,--wrap=shell_start
 endif
 
+# E20: compara cambios causados por agotamiento del quantum con dos tareas CPU.
+SLICE_BOARD_TEST ?= 0
+ifeq ($(SLICE_BOARD_TEST),1)
+ifneq ($(TRACE),1)
+$(error SLICE_BOARD_TEST=1 requiere TRACE=1)
+endif
+SRCS_C += tests/test_slice_board.c
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
 # La misma carga de heap y mutex mide el coste de TRACE=0 frente a TRACE=1.
 TRACE_COST_BOARD_TEST ?= 0
 ifeq ($(TRACE_COST_BOARD_TEST),1)
@@ -72,6 +87,21 @@ TRACE_OVERHEAD_BOARD_TEST ?= 0
 ifeq ($(TRACE_OVERHEAD_BOARD_TEST),1)
 SRCS_C += tests/test_trace_overhead_board.c
 CFLAGS += -DTRACE_OVERHEAD_BENCH=1
+LDFLAGS += -Wl,--wrap=shell_start
+endif
+
+# E11: mismo comando inject load nominal en ambas variantes, sin transporte.
+TRACE_NOMINAL_BOARD_TEST ?= 0
+ifeq ($(TRACE_NOMINAL_BOARD_TEST),1)
+ifneq ($(TRACE_OVERHEAD_BOARD_TEST),0)
+$(error solo se permite un banco de overhead a la vez)
+endif
+SRCS_C += tests/test_trace_overhead_board.c
+TRACE_NOMINAL_RUNS ?= 5
+TRACE_NOMINAL_RUN_MS ?= 60000
+CFLAGS += -DTRACE_OVERHEAD_BENCH=1 -DTRACE_NOMINAL_BENCH=1 \
+          -DTRACE_NOMINAL_RUNS=$(TRACE_NOMINAL_RUNS) \
+          -DTRACE_NOMINAL_RUN_MS=$(TRACE_NOMINAL_RUN_MS)
 LDFLAGS += -Wl,--wrap=shell_start
 endif
 
@@ -99,7 +129,7 @@ endif
 OBJS     := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
 -include $(OBJS:.o=.d)
 
-.PHONY: all clean flash monitor size test
+.PHONY: all clean flash flash-transport monitor size test
 
 all: $(TARGET).elf $(TARGET).bin
 
@@ -126,8 +156,13 @@ flash: all
 	$(ESPTOOL) --chip esp32 --port $(PORT) --baud $(BAUD) \
 		write_flash $(FLASH_ADDR) $(TARGET).bin
 
+# Atajo seguro para la imagen que alimenta bridge.py y el dashboard. Mantiene
+# TRANSPORT=1 durante compilacion, enlace y flasheo.
+flash-transport:
+	$(MAKE) TRANSPORT=1 flash PORT=$(PORT)
+
 monitor:
-	python3 -m serial.tools.miniterm $(PORT) 57600
+	python3 -m serial.tools.miniterm $(PORT) 57600 -f direct
 
 HOSTCC     := gcc
 HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
@@ -135,6 +170,8 @@ HOSTFLAGS  := -std=c11 -Wall -Wextra -g -Ikernel/include
 # Pruebas en WSL: heap, VFS y ring buffer de traza.
 test:
 	@mkdir -p $(BUILD)
+	$(HOSTCC) $(HOSTFLAGS) -Werror tests/test_slice_parse.c -o $(BUILD)/test_slice_parse
+	./$(BUILD)/test_slice_parse
 	$(HOSTCC) $(HOSTFLAGS) -Werror -DALERTS_HOST tests/test_alerts.c kernel/core/alerts.c -o $(BUILD)/test_alerts
 	./$(BUILD)/test_alerts
 	$(HOSTCC) $(HOSTFLAGS) -O2 -Werror -DGRAPH_HOST tests/test_graph.c kernel/core/graph.c -o $(BUILD)/test_graph

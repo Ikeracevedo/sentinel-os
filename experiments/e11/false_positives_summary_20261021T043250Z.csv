@@ -1,0 +1,2 @@
+session,commit,duration_s,load_iterations,detector_checks,false_alerts,raw_uart_bytes,crc_errors_live,frame_gaps_live,crc_errors_replay,frame_gaps_replay,device_dropped,status
+20261021T043250Z,bdfc322bb04eb9f18af5219180eb1bc525962276,3608.872,180450,7228,0,67610726,14,901,14,901,0,PASS

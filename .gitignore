@@ -1,5 +1,23 @@
-# Documentación interna del proyecto (privada por ahora)
-docs/
+# Documentación de referencia y entregables E12 versionados de forma selectiva.
+docs/*
+!docs/00-MASTER.md
+!docs/01-ARQUITECTURA.md
+!docs/03-PROTOCOLO.md
+!docs/04-DECISIONES-ADR.md
+!docs/05-ESTADO.md
+!docs/08-REQUISITOS-PROFESOR.md
+!docs/09-RUBRICA-PROFESOR.md
+!docs/10-PLAN-MVP-REUNION.md
+!docs/tasks/
+docs/tasks/*
+!docs/tasks/E11-validacion.md
+!docs/tasks/E12-documentacion.md
+!docs/tasks/E20-comandos-rubrica.md
+!docs/tasks/E21-dashboard-gantt.md
+!docs/tasks/E22-validacion-rubrica.md
+!docs/tasks/E23-entregables-manual.md
+!docs/e12/
+docs/e12/build/
 
 # Archivos de claude
 .claude/
@@ -15,4 +33,3 @@ build/
 *.pyc
 __pycache__/
 .vscode/
-EOF

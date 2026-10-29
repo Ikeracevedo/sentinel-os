@@ -73,6 +73,7 @@ typedef struct tcb {
 } tcb_t;
 
 tcb_t *task_get(uint32_t tid);
+uint32_t task_created_count(void);   /* total historico, incluye tareas terminadas */
 uint32_t task_stack_used(const tcb_t *t);   /* marca de agua de la pila, en bytes */
 tcb_t *task_alloc(void);
 tcb_t *task_register_boot(const char *name);

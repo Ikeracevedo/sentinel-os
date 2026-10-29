@@ -1,0 +1,13 @@
+{
+  "checks": {
+    "HU-E11-01": "baterías de perfiles y memoria con cinco corridas y crudos",
+    "HU-E11-02": "57.940 muestras y motivos; meta S1 medida e incumplida",
+    "HU-E11-03": "TRACE ON/OFF nominal 5+5, CPU, switch, RAM y binario",
+    "HU-E11-04": "20/20 detecciones, una hora sin falsas alertas, telemetría",
+    "HU-E11-05": "alternativa de Windows 5x; sin afirmación de 5 %",
+    "HU-E11-06": "tabla con incertidumbre y gráficas; S1 falla declarado"
+  },
+  "evidence_files": 115,
+  "failed_goal": "S1: switch nominal observado >=10 us",
+  "gpio_limitation": "sin analizador ni osciloscopio; cronómetro externo es cota"
+}

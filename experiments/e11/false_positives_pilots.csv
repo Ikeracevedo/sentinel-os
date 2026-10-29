@@ -1,0 +1,4 @@
+session,timestamp_utc,commit,git_dirty,duration_target_s,elapsed_s,phase,load_iterations,alloc_failures,detector_checks_delta,deadlock_alerts_delta,frag_alerts_delta,starve_alerts_delta,event_alerts,frame_alerts,last_cost_us,max_cost_us,heap_free_b,crc_errors_delta,frame_gaps_delta,dropped_device_delta,uart_bytes,status,error
+20261021T042937Z,2026-10-21T04:30:12.072232+00:00,0323e6a97f611db27c8d3ab545cecaced3089335,true,30,30.168,minute,1520,0,62,0,0,0,0,0,56.250,62.025,96676,1,1,0,,PASS,
+20261021T042937Z,2026-10-21T04:30:12.898807+00:00,0323e6a97f611db27c8d3ab545cecaced3089335,true,30,31.000,final,1565,0,64,0,0,0,0,0,56.250,62.025,96676,1,1,0,,PASS,
+20261021T042937Z,2026-10-21T04:30:14.738980+00:00,0323e6a97f611db27c8d3ab545cecaced3089335,true,30,33.666,end,,,,,,,,,,,,,,,634880,PASS,

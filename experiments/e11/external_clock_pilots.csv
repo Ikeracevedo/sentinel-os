@@ -1,0 +1,3 @@
+session,timestamp_utc,commit,git_dirty,run,workload,host_elapsed_ns,switches,ccount_switch_cycles,ccount_mean_us,host_time_per_switch_us,switch_fraction_pct,crc_errors,frame_gaps,event_seq_missing,device_dropped,uart_bytes,status,error
+20261021T054100Z,2026-10-21T05:41:00.780521+00:00,3d026b590ad32b89ec029066ca8c4ba65bf86290,true,1,switchbench,,,,,,,,,,,4096,FAIL,dict contains fields not in fieldnames: 'workload'
+20261021T054837Z,2026-10-21T05:48:37.783821+00:00,3d026b590ad32b89ec029066ca8c4ba65bf86290,true,1,switchbench,5165992000,1211,1167008,24.091825,4265.889348,0.564755,0,0,0,0,45056,PASS,

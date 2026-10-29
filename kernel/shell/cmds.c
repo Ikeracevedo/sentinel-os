@@ -13,6 +13,9 @@
 #include <sentinel/alerts.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
+#if SENTINEL_TRACE
+#include <sentinel/trace.h>
+#endif
 #if SENTINEL_TRANSPORT
 #include <sentinel/transport.h>
 #endif
@@ -21,6 +24,7 @@
 #include "../core/sched.h"
 #include "../core/time.h"
 #include "../arch/xtensa/cpu.h"
+#include "slice_parse.h"
 
 void inject_register_command(void);
 
@@ -326,6 +330,100 @@ static int cmd_free(int argc, char **argv) {
     return 0;
 }
 
+static uint32_t g_stats_switch_base;
+static uint32_t g_stats_rotation_base;
+#if SENTINEL_TRACE
+static uint32_t g_stats_event_base;
+static uint32_t g_stats_drop_base;
+#endif
+
+static void print_hundredths(uint32_t value) {
+    uint32_t fraction = value % 100u;
+    kprintf("%u.", value / 100u);
+    if (fraction < 10u) {
+        uart_putc('0');
+    }
+    kprintf("%u", fraction);
+}
+
+static int cmd_stats(int argc, char **argv) {
+    if (argc == 2 && str_eq(argv[1], "-r")) {
+        sched_slice_stats_t current;
+        sched_slice_stats(&current);
+        g_stats_switch_base = current.switches_total;
+        g_stats_rotation_base = current.rotations_total;
+#if SENTINEL_TRACE
+        g_stats_event_base = trace_emitted();
+        g_stats_drop_base = trace_dropped();
+#endif
+        sched_slice_reset_window();
+        kprintf("stats: vista reiniciada; buffer de traza intacto\r\n");
+        return 0;
+    }
+    if (argc != 1) {
+        shell_print_error("stats", "uso: stats [-r]", NULL);
+        return 1;
+    }
+
+    uint32_t ms = uptime_ms();
+    sched_slice_stats_t sched;
+    sched_slice_stats(&sched);
+    sched_jitter_t latency;
+    sched_jitter_snapshot(&latency);
+    heap_stats_t heap;
+    heap_stats(&heap);
+    uint32_t active = 0u;
+    for (uint32_t tid = 0; tid < MAX_TASKS; tid++) {
+        active += task_get(tid) != NULL;
+    }
+    uint32_t created = task_created_count();
+    uint32_t emitted = 0u;
+    uint32_t dropped = 0u;
+#if SENTINEL_TRACE
+    emitted = trace_emitted() - g_stats_event_base;
+    dropped = trace_dropped() - g_stats_drop_base;
+#endif
+    uint32_t total_events = emitted + dropped;
+    uint32_t drop_pct_x100 = total_events != 0u && dropped <= UINT32_MAX / 10000u
+        ? dropped * 10000u / total_events : 0u;
+
+    kprintf("=== SISTEMA ===\r\n");
+    kprintf("Uptime: %ud %uh %um %us (%u ms)\r\n",
+            ms / 86400000u, (ms / 3600000u) % 24u,
+            (ms / 60000u) % 60u, (ms / 1000u) % 60u, ms);
+    kprintf("CPU: %u MHz | quantum: %u ms\r\n",
+            CPU_FREQ_HZ / 1000000u, sched_quantum_ticks());
+    kprintf("=== PLANIFICADOR ===\r\n");
+    kprintf("Switches: %u | por segundo: ",
+            sched.switches_total - g_stats_switch_base);
+    print_hundredths(sched.switches_per_s_x100);
+    kprintf("\r\nRotaciones por quantum: %u | por segundo: ",
+            sched.rotations_total - g_stats_rotation_base);
+    print_hundredths(sched.rotations_per_s_x100);
+    kprintf("\r\nLatencia switch (us): media %u min %u max %u sigma %u\r\n",
+            latency.mean_us, latency.min_us, latency.max_us,
+            latency.stddev_us);
+    kprintf("=== TAREAS ===\r\n");
+    kprintf("Creadas: %u | activas: %u | terminadas: %u\r\n",
+            created, active, created - active);
+    kprintf("CPU ociosa: %u%%\r\n", cpu_idle_percent());
+    kprintf("=== MEMORIA ===\r\n");
+    kprintf("Heap: %u total | %u usado | %u libre (B)\r\n",
+            heap.total, heap.used, heap.free);
+    kprintf("Mayor libre: %u B | fragmentacion: %u%% | pico: %u B\r\n",
+            heap.largest_free_block, heap_frag_percent(&heap), heap.peak_used);
+    kprintf("=== INSTRUMENTACION ===\r\n");
+    kprintf("Eventos: %u | perdidos: %u (", emitted, dropped);
+    print_hundredths(drop_pct_x100);
+    kprintf("%%)\r\nTasas medidas durante %u s desde slice o stats -r\r\n",
+            sched.slice_seconds);
+#if !SENTINEL_TRANSPORT
+    kprintf("Transporte inactivo: el buffer de traza puede llenarse.\r\n");
+#endif
+    uart_flush();
+    return 0;
+}
+
 static int cmd_sync(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -506,26 +604,196 @@ static int cmd_health(int argc, char **argv) {
     return 0;
 }
 
+typedef struct {
+    const char *name;
+    const char *detail;
+} help_detail_t;
+
+static const help_detail_t k_help_details[] = {
+    {"help", "Muestra el indice de comandos. Puedes elegir una categoria o un\r\n"
+             "comando para ver su uso, opciones y efectos."},
+    {"ls", "Lista archivos y directorios de la ruta; sin ruta usa el directorio actual."},
+    {"cd", "Cambia el directorio actual del shell. Sin ruta vuelve a /home/iker."},
+    {"pwd", "Imprime la ruta del directorio actual del shell."},
+    {"cat", "Lee y muestra el contenido de un archivo sin modificarlo."},
+    {"mkdir", "Crea un directorio en el sistema de archivos en memoria."},
+    {"touch", "Crea un archivo vacio si no existe."},
+    {"write", "Crea o reemplaza el archivo con el texto indicado y un salto final.\r\n"
+              "El contenido anterior se pierde."},
+    {"rm", "Borra un archivo o directorio vacio. -r borra un arbol completo;\r\n"
+           "no borra la raiz ni recursos que siguen en uso."},
+    {"echo", "Imprime el texto recibido sin guardarlo en un archivo."},
+    {"ps", "Lista TID, nombre, estado, prioridad, quantum, CPU y heap por tarea.\r\n"
+           "Con -v agrega cambios, CPUms, espera, pila y bloqueo; acepta un nombre."},
+    {"slice", "Sin argumento muestra el quantum. Con 1..10000 ms cambia en caliente\r\n"
+              "el turno de todas las tareas, actuales y futuras. 1 tick = 1 ms.\r\n"
+              "Un valor corto reparte CPU mas seguido; uno largo reduce rotaciones."},
+    {"free", "Muestra total, usado, libre y fragmentacion del heap. -v dibuja el mapa."},
+    {"stats", "Resume sistema, planificador, tareas, memoria e instrumentacion.\r\n"
+              "Las tasas se miden desde el ultimo slice o stats -r. -r reinicia solo\r\n"
+              "esta vista: no borra tareas, heap ni el buffer de traza. Sin bridge\r\n"
+              "(TRANSPORT=0) el buffer puede llenarse y reportar eventos perdidos."},
+    {"sync", "Muestra mutexes, propietarios y tareas en espera para diagnosticar bloqueos."},
+    {"graph", "Muestra quien espera a quien en el grafo de recursos."},
+    {"deadlock", "Comprueba ahora si el grafo de espera contiene un ciclo (interbloqueo)."},
+    {"detector", "Muestra costo y alertas del detector. starve cambia el umbral de\r\n"
+                 "inanicion en ms; jitter cambia el umbral de variacion en us."},
+    {"alerts", "Lista las ultimas 32 alertas. -c limpia esos registros de alerta."},
+    {"health", "Resume el estado de salud de tareas, memoria, bloqueos y latencia."},
+    {"uptime", "Muestra el tiempo transcurrido desde el ultimo arranque."},
+    {"uname", "Muestra el nombre del sistema. -a agrega la version y compilacion."},
+    {"clear", "Limpia la pantalla visible; conserva historial y estado del sistema."},
+    {"history", "Muestra los comandos recientes del shell; reboot reinicia este historial."},
+    {"run", "Sin argumentos lista blink, counter, hog, sleeper y alloc. Con un\r\n"
+            "programa crea una tarea y devuelve su TID; blink acepta periodo en ms."},
+    {"kill", "Termina el TID indicado y libera sus recursos. No acepta idle ni shell."},
+    {"reboot", "Reinicia la placa; se pierden tareas, archivos e historial en RAM."},
+    {"inject", "list muestra escenarios de fallo; status los activos; stop detiene\r\n"
+               "uno o todos. Un nombre de escenario inicia una inyeccion controlada."},
+    {"trace", "on/off controla las sondas; filter activa tipos; sample reduce eventos;\r\n"
+              "stats muestra emitidos, perdidos, ocupacion y filtros. El latido sigue."},
+};
+
+static const char *help_detail(const char *name) {
+    for (uint32_t i = 0; i < sizeof(k_help_details) / sizeof(k_help_details[0]); i++) {
+        if (str_eq(name, k_help_details[i].name)) {
+            return k_help_details[i].detail;
+        }
+    }
+    return NULL;
+}
+
+typedef struct {
+    const char *section;
+    const char *key;
+    const char *name;
+} help_index_item_t;
+
+static const help_index_item_t k_help_index[] = {
+    {"EMPEZAR", "empezar", "help"},
+    {NULL, NULL, "pwd"}, {NULL, NULL, "ls"}, {NULL, NULL, "cd"},
+    {NULL, NULL, "cat"}, {NULL, NULL, "echo"}, {NULL, NULL, "clear"},
+    {NULL, NULL, "history"},
+    {"ARCHIVOS EN RAM", "archivos", "mkdir"},
+    {NULL, NULL, "touch"}, {NULL, NULL, "write"}, {NULL, NULL, "rm"},
+    {"TAREAS Y CPU", "tareas", "ps"},
+    {NULL, NULL, "run"}, {NULL, NULL, "kill"}, {NULL, NULL, "slice"},
+    {"SISTEMA Y MEMORIA", "sistema", "stats"},
+    {NULL, NULL, "free"}, {NULL, NULL, "health"},
+    {NULL, NULL, "uptime"}, {NULL, NULL, "uname"}, {NULL, NULL, "reboot"},
+    {"DIAGNOSTICO", "diagnostico", "sync"},
+    {NULL, NULL, "graph"}, {NULL, NULL, "deadlock"},
+    {NULL, NULL, "detector"}, {NULL, NULL, "alerts"},
+    {NULL, NULL, "trace"}, {NULL, NULL, "inject"},
+};
+
+/* Envuelve las explicaciones antes de la columna 76, incluso si el terminal
+ * no hace ajuste automatico. Respeta los saltos de linea intencionales. */
+static void help_print_wrapped(const char *s) {
+    uint32_t col = 2u;
+    kprintf("  ");
+    while (*s != '\0') {
+        if (*s == '\r' || *s == '\n') {
+            char newline = *s++;
+            if (newline == '\r' && *s == '\n') {
+                s++;
+            }
+            kprintf("\r\n  ");
+            col = 2u;
+            continue;
+        }
+        if (*s == ' ' || *s == '\t') {
+            s++;
+            continue;
+        }
+        const char *word = s;
+        uint32_t len = 0u;
+        while (s[len] != '\0' && s[len] != ' ' && s[len] != '\t' &&
+               s[len] != '\r' && s[len] != '\n') {
+            len++;
+        }
+        if (col > 2u && col + 1u + len > 76u) {
+            kprintf("\r\n  ");
+            col = 2u;
+        } else if (col > 2u) {
+            uart_putc(' ');
+            col++;
+        }
+        for (uint32_t i = 0u; i < len; i++) {
+            uart_putc(word[i]);
+        }
+        col += len;
+        s += len;
+    }
+    kprintf("\r\n");
+}
+
+static void help_print_index(const char *section_filter) {
+    const char *current_key = NULL;
+    kprintf("\r\n=== AYUDA DE SENTINEL OS ===\r\n");
+    kprintf("Categorias: empezar, archivos, tareas, sistema, diagnostico.\r\n");
+    kprintf("Usa help <categoria> o help <comando> para ver mas.\r\n");
+    for (uint32_t i = 0; i < sizeof(k_help_index) / sizeof(k_help_index[0]); i++) {
+        if (k_help_index[i].section != NULL) {
+            current_key = k_help_index[i].key;
+        }
+        if (section_filter != NULL && !str_eq(current_key, section_filter)) {
+            continue;
+        }
+        const char *name = k_help_index[i].name;
+        for (uint32_t j = 0; j < shell_cmd_count(); j++) {
+            if (!str_eq(shell_cmd_name(j), name)) {
+                continue;
+            }
+            if (k_help_index[i].section != NULL) {
+                kprintf("\r\n[%s]\r\n", k_help_index[i].section);
+            }
+            kprintf("  %-10s %s\r\n", name, shell_cmd_brief(j));
+            break;
+        }
+    }
+    kprintf("\r\nEjemplo: help stats\r\n");
+}
+
 static int cmd_help(int argc, char **argv) {
+    if (argc > 2) {
+        shell_print_error("help", "uso: help [categoria|comando]", NULL);
+        return 1;
+    }
     if (argc >= 2) {
-        for (uint32_t i = 0; i < shell_cmd_count(); i++) {
-            if (str_eq(shell_cmd_name(i), argv[1])) {
-                kprintf("%s - %s\r\nuso: %s\r\n", shell_cmd_name(i), shell_cmd_brief(i), shell_cmd_usage(i));
+        for (uint32_t i = 0; i < sizeof(k_help_index) / sizeof(k_help_index[0]); i++) {
+            if (k_help_index[i].key != NULL && str_eq(k_help_index[i].key, argv[1])) {
+                help_print_index(argv[1]);
+                uart_flush();
                 return 0;
             }
         }
-        shell_print_error("help", "no existe el comando", argv[1]);
+        for (uint32_t i = 0; i < shell_cmd_count(); i++) {
+            if (str_eq(shell_cmd_name(i), argv[1])) {
+                kprintf("\r\n=== %s ===\r\n", shell_cmd_name(i));
+                kprintf("%s\r\n\r\nUso:\r\n", shell_cmd_brief(i));
+                help_print_wrapped(shell_cmd_usage(i));
+                const char *detail = help_detail(argv[1]);
+                if (detail != NULL) {
+                    kprintf("\r\nQue hace:\r\n");
+                    help_print_wrapped(detail);
+                }
+                if (str_eq(argv[1], "ps")) {
+                    kprintf("\r\nColumnas de ps:\r\n");
+                    help_print_wrapped("TID: identificador; NOMBRE: tarea; ESTADO: situacion actual.");
+                    help_print_wrapped("PRI: prioridad (0 es mayor); QUANTUM: turno en ms.");
+                    help_print_wrapped("CPU%: uso desde el ultimo ps; MEM: bytes de heap.");
+                    help_print_wrapped("-v: CAMBIOS, CPUms, ESPERAms, PILA usada/total y BLOQms.");
+                }
+                uart_flush();
+                return 0;
+            }
+        }
+        shell_print_error("help", "no existe el comando o la categoria", argv[1]);
         return 1;
     }
-    kprintf("Comandos disponibles:\r\n");
-    for (uint32_t i = 0; i < shell_cmd_count(); i++) {
-        const char *name = shell_cmd_name(i);
-        kprintf("  %s", name);
-        for (uint32_t k = str_len(name); k < 10u; k++) {
-            uart_putc(' ');
-        }
-        kprintf("%s\r\n", shell_cmd_brief(i));
-    }
+    help_print_index(NULL);
+    uart_flush();
     return 0;
 }
 
@@ -553,6 +821,25 @@ static int cmd_reboot(int argc, char **argv) {
 }
 
 /* ---- ps ---- */
+
+static int cmd_slice(int argc, char **argv) {
+    if (argc == 1) {
+        uint32_t ticks = sched_quantum_ticks();
+        kprintf("slice: quantum actual %u ms (%u ticks)\r\n", ticks, ticks);
+        return 0;
+    }
+    if (argc != 2) {
+        shell_print_error("slice", "uso: slice [1..10000 ms]", NULL);
+        return 1;
+    }
+    uint32_t ms;
+    if (slice_parse_ms(argv[1], &ms) != 0 || sched_set_quantum(ms) != 0) {
+        shell_print_error("slice", "quantum invalido (1..10000 ms)", argv[1]);
+        return 1;
+    }
+    kprintf("slice: quantum actualizado a %u ms (%u ticks)\r\n", ms, ms);
+    return 0;
+}
 
 static uint64_t g_prev_cycles[MAX_TASKS];
 static uint32_t g_prev_instance[MAX_TASKS];
@@ -606,9 +893,9 @@ static int cmd_ps(int argc, char **argv) {
     uint32_t total32 = (uint32_t)(total >> shift);
 
     if (verbose) {
-        kprintf("TID NOMBRE     ESTADO    PRI  CPU%%    MEM  CAMBIOS  CPUms  ESPERAms  PILA  BLOQms\r\n");
+        kprintf("TID NOMBRE           ESTADO    PRI QUANTUM  CPU%%    MEM  CAMBIOS  CPUms  ESPERAms  PILA  BLOQms\r\n");
     } else {
-        kprintf("TID NOMBRE     ESTADO    PRI  CPU%%    MEM\r\n");
+        kprintf("TID NOMBRE           ESTADO    PRI QUANTUM  CPU%%    MEM\r\n");
     }
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         tcb_t *t = task_get(i);
@@ -623,14 +910,16 @@ static int cmd_ps(int argc, char **argv) {
         const char *st = task_state_name(t->state);
         kprintf("%3u ", (uint32_t)t->tid);
         kprintf("%s", t->name);
-        for (uint32_t k = str_len(t->name); k < 10u; k++) {
+        for (uint32_t k = str_len(t->name); k < 16u; k++) {
             uart_putc(' ');
         }
+        uart_putc(' ');
         kprintf("%s", st);
         for (uint32_t k = str_len(st); k < 10u; k++) {
             uart_putc(' ');
         }
-        kprintf("%3u %4u%% %6u", (uint32_t)t->priority, pct, mem);
+        kprintf("%3u %7u %4u%% %6u", (uint32_t)t->priority,
+                t->quantum_ticks, pct, mem);
         if (verbose) {
             uint32_t blocked_ms = (t->state == TASK_BLOCKED) ?
                                   uptime_ms() - t->wait_started_ms : 0u;
@@ -785,9 +1074,9 @@ void shell_register_builtins(void) {
 #if SENTINEL_TRACE
     trace_register_command();
 #endif
-    cmd_register("help",    cmd_help,    "lista los comandos", "help [comando]");
+    cmd_register("help",    cmd_help,    "muestra la ayuda por categoria o comando", "help [categoria|comando]");
     cmd_register("ls",      cmd_ls,      "lista un directorio", "ls [ruta]");
-    cmd_register("cd",      cmd_cd,      "cambia de directorio", "cd [ruta]   (sin argumentos: /home/iker)");
+    cmd_register("cd",      cmd_cd,      "cambia de directorio", "cd [ruta]");
     cmd_register("pwd",     cmd_pwd,     "muestra el directorio actual", "pwd");
     cmd_register("cat",     cmd_cat,     "muestra un archivo", "cat <archivo>");
     cmd_register("mkdir",   cmd_mkdir,   "crea un directorio", "mkdir <ruta>");
@@ -796,7 +1085,9 @@ void shell_register_builtins(void) {
     cmd_register("rm",      cmd_rm,      "borra archivos o directorios", "rm [-r] <ruta>");
     cmd_register("echo",    cmd_echo,    "imprime su texto", "echo <texto...>");
     cmd_register("ps",      cmd_ps,      "lista las tareas", "ps [-v] [nombre]");
-    cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]   (-v: mapa del heap)");
+    cmd_register("slice",   cmd_slice,   "cambia el quantum de todas las tareas", "slice [ms]");
+    cmd_register("free",    cmd_free,    "estado del heap y fragmentacion", "free [-v]");
+    cmd_register("stats",   cmd_stats,   "metricas agregadas del sistema", "stats [-r]");
     cmd_register("sync",    cmd_sync,    "muestra propietarios y esperas de mutex", "sync");
     cmd_register("graph",   cmd_graph,   "muestra aristas del grafo de espera", "graph");
     cmd_register("deadlock", cmd_deadlock, "comprueba un ciclo de espera ahora", "deadlock");

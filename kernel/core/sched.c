@@ -11,6 +11,13 @@
 
 static tcb_t *g_current = NULL;
 static tcb_t *g_idle = NULL;
+static uint32_t g_default_quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+static uint32_t g_quantum_rotations;
+static uint32_t g_stats_cost_total;
+static uint32_t g_stats_cost_count;
+static uint32_t g_slice_start_ms;
+static uint32_t g_slice_switch_base;
+static uint32_t g_slice_rotation_base;
 
 /* Contabilidad de CPU: g_mark es el CCOUNT de la ultima vez que se cargo
  * tiempo a una tarea. Se actualiza en cada tick (<= 1 ms), asi la resta de
@@ -63,6 +70,7 @@ void sched_init(void) {
         panic("sched_init: la tarea idle debe ser el tid 0");
     }
     g_current = g_idle;
+    g_slice_start_ms = uptime_ms();
 
     g_mark = cpu_cycles();
     g_win_start = g_mark;
@@ -117,6 +125,86 @@ static void close_idle_window(void) {
 
 tcb_t *sched_current(void) {
     return g_current;
+}
+
+uint32_t sched_quantum_ticks(void) {
+    return g_default_quantum_ticks;
+}
+
+/* Rotaciones entre tareas de la misma prioridad provocadas por agotamiento
+ * del turno. Tambien cuenta si despierta una tarea de mayor prioridad justo
+ * en el tick final: el cambio se etiqueta PREEMPT, pero el turno si vencio. */
+uint32_t sched_quantum_rotations(void) {
+    uint32_t saved_ps = irq_disable();
+    uint32_t count = g_quantum_rotations;
+    irq_restore(saved_ps);
+    return count;
+}
+
+/* Tasas desde el ultimo cambio de slice. La division usa segundos completos
+ * para evitar helpers de division de 64 bits en el kernel bare metal. */
+void sched_slice_stats(sched_slice_stats_t *out) {
+    if (out == NULL) {
+        return;
+    }
+    uint32_t saved_ps = irq_disable();
+    uint32_t switches = g_stats_cost_count;
+    uint32_t rotations = g_quantum_rotations;
+    uint32_t elapsed_ms = uptime_ms() - g_slice_start_ms;
+    uint32_t switch_delta = switches - g_slice_switch_base;
+    uint32_t rotation_delta = rotations - g_slice_rotation_base;
+    irq_restore(saved_ps);
+
+    uint32_t seconds = elapsed_ms / 1000u;
+    out->switches_total = switches;
+    out->rotations_total = rotations;
+    out->slice_seconds = seconds;
+    out->switches_per_s_x100 = seconds == 0u ? 0u :
+        (switch_delta <= UINT32_MAX / 100u ? switch_delta * 100u / seconds :
+         (switch_delta / seconds) * 100u);
+    out->rotations_per_s_x100 = seconds == 0u ? 0u :
+        (rotation_delta <= UINT32_MAX / 100u ? rotation_delta * 100u / seconds :
+         (rotation_delta / seconds) * 100u);
+}
+
+void sched_slice_reset_window(void) {
+    uint32_t saved_ps = irq_disable();
+    g_slice_start_ms = uptime_ms();
+    g_slice_switch_base = g_stats_cost_count;
+    g_slice_rotation_base = g_quantum_rotations;
+    irq_restore(saved_ps);
+}
+
+/* Un tick dura 1 ms. La sección crítica impide que el timer vea una tabla
+ * parcialmente actualizada; nunca se imprime ni se bloquea dentro de ella. */
+int sched_set_quantum(uint32_t ms) {
+    if (ms < 1u || ms > 10000u) {
+        return -1;
+    }
+    uint32_t saved_ps = irq_disable();
+    uint32_t previous = g_default_quantum_ticks;
+    g_default_quantum_ticks = ms;
+    g_slice_start_ms = uptime_ms();
+    g_slice_switch_base = g_stats_cost_count;
+    g_slice_rotation_base = g_quantum_rotations;
+    for (uint32_t tid = 0; tid < MAX_TASKS; tid++) {
+        tcb_t *t = task_get(tid);
+        if (t == NULL) {
+            continue;
+        }
+        t->quantum_ticks = ms;
+        if (t->quantum_left > ms) {
+            t->quantum_left = ms;
+        }
+    }
+#if SENTINEL_TRACE
+    trace_probe_emit(EV_SLICE_CHANGE, g_current != NULL ? g_current->tid : 0u,
+                     previous, ms);
+#else
+    (void)previous;
+#endif
+    irq_restore(saved_ps);
+    return 0;
 }
 
 void sched_make_ready(tcb_t *t) {
@@ -183,8 +271,6 @@ static void wake_sleepers(void) {
 
 /* Estadisticas de entrada a la CPU. Se mide su propio costo (CCOUNT antes y
  * despues) para comprobar el presupuesto de < 20 ciclos por cambio. */
-static uint32_t g_stats_cost_total;
-static uint32_t g_stats_cost_count;
 
 #if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
 static sched_bench_stats_t g_bench_stats;
@@ -343,13 +429,16 @@ static uint32_t switch_task(uint32_t frame_sp, uint32_t reason) {
 #if defined(TRACE_OVERHEAD_BENCH) && TRACE_OVERHEAD_BENCH
     uint32_t bench_start = cpu_cycles();
 #endif
-#if !SENTINEL_TRACE
-    (void)reason;
-#endif
     tcb_t *prev = g_current;
 
     prev->sp = frame_sp;
     check_canary(prev);
+    /* Una preempcion conserva el tiempo restante de prev. Al ceder, bloquearse
+     * o agotar el quantum, su siguiente turno empieza con el quantum completo.
+     * Si la preempcion coincide con el ultimo tick, tambien se renueva. */
+    if (reason != TRACE_SWITCH_PREEMPT || prev->quantum_left == 0u) {
+        prev->quantum_left = prev->quantum_ticks;
+    }
     if (prev->state == TASK_RUNNING) {
         sched_make_ready(prev);
     }
@@ -370,7 +459,6 @@ static uint32_t switch_task(uint32_t frame_sp, uint32_t reason) {
 #endif
 
     next->state = TASK_RUNNING;
-    next->quantum_left = next->quantum_ticks;
     g_current = next;
 
 #if SENTINEL_TRACE
@@ -466,6 +554,10 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
         uint32_t best = best_ready_prio();
         int expired = (g_current->quantum_left == 0);
 
+        if (expired && g_rq_count[g_current->priority] != 0u) {
+            g_quantum_rotations++;
+        }
+
         if (best < g_current->priority) {
             return switch_task(frame_sp, TRACE_SWITCH_PREEMPT);
         }
@@ -478,7 +570,6 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
         return frame_sp;
     }
 
-#if SENTINEL_TRACE
     uint32_t reason = TRACE_SWITCH_YIELD;
     if (g_current->state == TASK_TERMINATED) {
         reason = TRACE_SWITCH_EXIT;
@@ -489,9 +580,6 @@ static uint32_t dispatch_inner(ctx_frame_t *frame) {
     }
 
     return switch_task(frame_sp, reason);
-#else
-    return switch_task(frame_sp, 0u);
-#endif
 }
 
 /* Marca el contexto de interrupcion mientras dura el despacho del tick:

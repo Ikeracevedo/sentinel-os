@@ -7,6 +7,9 @@
 #include <sentinel/sync.h>
 #include <sentinel/kprintf.h>
 #include <sentinel/probe.h>
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+#include <sentinel/inject_bench.h>
+#endif
 #include "../core/sched.h"
 #include "../core/time.h"
 #include "../arch/xtensa/cpu.h"
@@ -28,6 +31,9 @@
 #define PRIO_INV_LOW_WORK_CYCLES CPU_FREQ_HZ
 #define PRIO_INV_MAX_MS 20000u
 #define LOAD_MAX_WORKERS 8u
+#define SWITCHBENCH_WORKERS 2u
+#define SWITCHBENCH_BUSY_MS 20u
+#define SWITCHBENCH_SLEEP_MS 100u
 #define STACK_TEST_BYTES 3072u
 #define STACK_TEST_MARGIN 1536u
 
@@ -60,6 +66,7 @@ static volatile uint8_t g_inv_low_locked;
 static volatile uint8_t g_inv_medium_expired;
 static mutex_t g_load_mutex;
 static volatile uint32_t g_load_iterations[LOAD_MAX_WORKERS];
+static volatile uint32_t g_switchbench_rounds[SWITCHBENCH_WORKERS];
 static volatile uint32_t g_load_alloc_failures;
 static uint32_t g_load_started_ms;
 static uint32_t g_load_period_ms;
@@ -423,6 +430,51 @@ static int start_load(scenario_t *scenario, int argc, char **argv) {
     return 0;
 }
 
+/* Dos tareas de igual prioridad permanecen listas el tiempo suficiente para
+ * agotar el quantum. Luego ceden voluntariamente y duermen. Es un escenario
+ * complementario: nunca se mezcla con las muestras de inject load nominal. */
+static void switchbench_task(void *arg) {
+    uint32_t index = (uint32_t)(uintptr_t)arg;
+    for (;;) {
+        uint32_t started = uptime_ms();
+        while ((uint32_t)(uptime_ms() - started) < SWITCHBENCH_BUSY_MS) {
+            __asm__ __volatile__("" ::: "memory");
+        }
+        sched_yield();
+        g_switchbench_rounds[index]++;
+        task_sleep(SWITCHBENCH_SLEEP_MS);
+    }
+}
+
+static int start_switchbench(scenario_t *scenario, int argc, char **argv) {
+    (void)argv;
+    if (argc != 2) {
+        shell_print_error("inject", "uso: inject switchbench", NULL);
+        return 1;
+    }
+    for (uint32_t i = 0u; i < SWITCHBENCH_WORKERS; i++) {
+        g_switchbench_rounds[i] = 0u;
+    }
+    for (uint32_t i = 0u; i < SWITCHBENCH_WORKERS; i++) {
+        int32_t tid = task_create("switchbench", switchbench_task,
+                                  (void *)(uintptr_t)i, 5u, 0u);
+        if (tid < 0) {
+            while (scenario->count > 0u) {
+                (void)task_kill(scenario->tids[--scenario->count]);
+            }
+            shell_print_error("inject", "no hay ranuras para switchbench", NULL);
+            return 1;
+        }
+        scenario->tids[i] = (uint8_t)tid;
+        scenario->task_instances[i] = task_get((uint32_t)tid)->instance_id;
+        scenario->task_names[i] = "switchbench";
+        scenario->count++;
+    }
+    kprintf("inject switchbench: %u tareas pri=5, CPU=%u ms, sleep=%u ms, yield voluntario\r\n",
+            SWITCHBENCH_WORKERS, SWITCHBENCH_BUSY_MS, SWITCHBENCH_SLEEP_MS);
+    return 0;
+}
+
 /* Recursion real, pero el ultimo marco conserva espacio para la interrupcion
  * y el scheduler. Se corrompe solamente el canario de ESTA tarea: nunca se
  * escribe fuera de su pila ni se alcanza la pila de una tarea vecina. */
@@ -578,6 +630,8 @@ static scenario_t g_scenarios[] = {
      .start=start_load, .cleanup=cleanup_load},
     {.name="stack-overflow", .description="desbordamiento de pila", .id=7u,
      .start=start_stack_overflow},
+    {.name="switchbench", .description="quantum y yield controlados para E11", .id=8u,
+     .start=start_switchbench},
 };
 #define SCENARIO_COUNT (sizeof(g_scenarios) / sizeof(g_scenarios[0]))
 
@@ -666,6 +720,9 @@ static void status_scenarios(void) {
             kprintf("load: perfil=%s tiempo=%u ms ciclos=%u tasa=%u.%u/s fallos_alloc=%u\r\n",
                     g_load_profile, elapsed, iterations, rate_x10 / 10u,
                     rate_x10 % 10u, g_load_alloc_failures);
+        } else if (s->id == 8u) {
+            kprintf("switchbench: rondas=%u,%u\r\n",
+                    g_switchbench_rounds[0], g_switchbench_rounds[1]);
         }
     }
     if (active == 0u) {
@@ -775,3 +832,29 @@ void inject_register_command(void) {
     cmd_register("inject", cmd_inject, "activa y detiene fallos controlados",
                  "inject list|status|stop [escenario]|<escenario> [parametros]");
 }
+
+#if defined(TRACE_NOMINAL_BENCH) && TRACE_NOMINAL_BENCH
+/* El banco E11 llama al mismo camino que el shell. Asi configuracion,
+ * trabajadores, contador y limpieza son identicos a inject load nominal. */
+int inject_nominal_bench_start(void) {
+    char *argv[] = {"inject", "load", "nominal"};
+    return cmd_inject(3, argv);
+}
+
+int inject_nominal_bench_stop(void) {
+    char *argv[] = {"inject", "stop", "load"};
+    return cmd_inject(3, argv);
+}
+
+uint32_t inject_nominal_bench_iterations(void) {
+    uint32_t total = 0u;
+    for (uint32_t i = 0u; i < 5u; i++) {
+        total += g_load_iterations[i];
+    }
+    return total;
+}
+
+uint32_t inject_nominal_bench_alloc_failures(void) {
+    return g_load_alloc_failures;
+}
+#endif

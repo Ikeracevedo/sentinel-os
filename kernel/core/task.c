@@ -56,6 +56,10 @@ tcb_t *task_get(uint32_t tid) {
     return &g_tasks[tid];
 }
 
+uint32_t task_created_count(void) {
+    return g_next_instance_id;
+}
+
 tcb_t *task_alloc(void) {
     for (uint32_t i = 0; i < MAX_TASKS; i++) {
         if (g_tasks[i].state == TASK_UNUSED) {
@@ -77,7 +81,7 @@ tcb_t *task_register_boot(const char *name) {
     }
     copy_name(t->name, name);
     t->priority = TASK_PRIORITY_LEVELS - 1u;
-    t->quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+    t->quantum_ticks = sched_quantum_ticks();
     t->quantum_left = t->quantum_ticks;
     t->cwd[0] = '/';
     t->state = TASK_RUNNING;
@@ -286,7 +290,7 @@ int32_t task_create(const char *name, task_fn_t fn, void *arg,
 
     t->sp = (uint32_t)(uintptr_t)f;
     t->priority = priority;
-    t->quantum_ticks = TASK_DEFAULT_QUANTUM_TICKS;
+    t->quantum_ticks = sched_quantum_ticks();
     t->quantum_left = t->quantum_ticks;
     t->stack_base = (uint32_t *)base;
     t->stack_size = stack_size;

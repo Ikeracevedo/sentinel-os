@@ -1,0 +1,3 @@
+timestamp_utc,commit,git_dirty,variant,profile,run,duration_s,baseline_free,baseline_largest,baseline_blocks,min_free,min_largest,last_free,last_largest,max_fragmentation_pct,post_free,post_largest,post_blocks,stats_samples,uart_bytes,crc_errors_delta,frame_gaps_delta,status
+2026-10-21T01:06:45.650163+00:00,94c990ebc45b185101d21c332933efd8180b3911,true,trace-on,leak,1,10.0,96676,96676,19,91076,91076,91076,91076,0.0,96676,96676,19,10,86016,1,1,PILOT_LINK_ERRORS
+2026-10-21T01:09:20.744663+00:00,94c990ebc45b185101d21c332933efd8180b3911,true,trace-on,frag,1,10.0,96676,96676,19,49936,3796,49936,3796,92.39826978532521,96676,96676,19,10,86016,0,0,PILOT
