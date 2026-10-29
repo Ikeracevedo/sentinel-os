@@ -47,6 +47,25 @@ The switch value includes the measurement probe and excludes the final interrupt
 
 Prerequisites: ESP32-WROOM-32, USB serial adapter/board, WSL with the Xtensa ESP32 toolchain and `esptool.py`; Python 3.9+ on Windows, with `pyserial` only for live serial use. The exact port must be checked each time. Flashing changes the board firmware.
 
+### Sentinel launcher / Lanzador Sentinel
+
+The ESP32 must already contain the transport firmware. On Windows, the official
+entry point starts the reset of the kernel, the UART bridge and the local
+dashboard in one command:
+
+```powershell
+.\sentinel.ps1 -Port COM8
+```
+
+The console remains interactive and the dashboard is available at
+`http://127.0.0.1:8080`. Press `Ctrl+C` to close the bridge, dashboard and
+serial port cleanly. `minios.ps1` is an equivalent compatibility entry point
+for the professor's `minios` naming. On Linux/WSL the equivalent commands are
+`./sentinel --port /dev/ttyUSB0` and `./minios --port /dev/ttyUSB0`. When the
+ESP32 is deliberately kept on the stable native Windows port, WSL can still
+use the literal rubric command `./minios --port COM8`; it delegates to
+`sentinel.ps1` rather than using an unreliable USB/IP serial stream.
+
 ```bash
 # WSL, from the repository root: build the current instrumented firmware
 make TRACE=1 TRANSPORT=1

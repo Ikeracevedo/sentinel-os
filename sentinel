@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Entrada oficial de Sentinel OS; ./minios conserva compatibilidad con la rúbrica.
+set -euo pipefail
+root="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+exec "$root/minios" "$@"
