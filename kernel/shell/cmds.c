@@ -332,6 +332,12 @@ static int cmd_free(int argc, char **argv) {
 
 static uint32_t g_stats_switch_base;
 static uint32_t g_stats_rotation_base;
+/* Al iniciar el shell ya existen idle y las tareas de infraestructura. Esta
+ * foto es la referencia honesta para comprobar que `exit` no deja heap de
+ * procesos de usuario. Los TID 0..4 son reservados por el arranque. */
+static uint32_t g_exit_base_free;
+static uint32_t g_exit_base_blocks;
+static uint8_t  g_exit_quiescent;
 #if SENTINEL_TRACE
 static uint32_t g_stats_event_base;
 static uint32_t g_stats_drop_base;
@@ -647,6 +653,8 @@ static const help_detail_t k_help_details[] = {
     {"run", "Sin argumentos lista blink, counter, hog, sleeper y alloc. Con un\r\n"
             "programa crea una tarea y devuelve su TID; blink acepta periodo en ms."},
     {"kill", "Termina el TID indicado y libera sus recursos. No acepta idle ni shell."},
+    {"exit", "Termina las tareas de usuario, comprueba que el heap vuelve a la\r\n"
+             "linea base y deja el sistema en reposo hasta ejecutar reboot."},
     {"reboot", "Reinicia la placa; se pierden tareas, archivos e historial en RAM."},
     {"inject", "list muestra escenarios de fallo; status los activos; stop detiene\r\n"
                "uno o todos. Un nombre de escenario inicia una inyeccion controlada."},
@@ -680,7 +688,8 @@ static const help_index_item_t k_help_index[] = {
     {NULL, NULL, "run"}, {NULL, NULL, "kill"}, {NULL, NULL, "slice"},
     {"SISTEMA Y MEMORIA", "sistema", "stats"},
     {NULL, NULL, "free"}, {NULL, NULL, "health"},
-    {NULL, NULL, "uptime"}, {NULL, NULL, "uname"}, {NULL, NULL, "reboot"},
+    {NULL, NULL, "uptime"}, {NULL, NULL, "uname"}, {NULL, NULL, "exit"},
+    {NULL, NULL, "reboot"},
     {"DIAGNOSTICO", "diagnostico", "sync"},
     {NULL, NULL, "graph"}, {NULL, NULL, "deadlock"},
     {NULL, NULL, "detector"}, {NULL, NULL, "alerts"},
@@ -817,6 +826,47 @@ static int cmd_reboot(int argc, char **argv) {
     for (;;) {
         __asm__ __volatile__("waiti 0");   /* espera el reinicio (no vuelve) */
     }
+    return 0;
+}
+
+static int cmd_exit(int argc, char **argv) {
+    (void)argv;
+    if (argc != 1) {
+        shell_print_error("exit", "uso: exit", NULL);
+        return 1;
+    }
+    if (g_exit_quiescent) {
+        kprintf("[exit] sistema ya esta en reposo; use reboot para iniciar de nuevo.\r\n");
+        return 0;
+    }
+
+    heap_stats_t before;
+    heap_stats(&before);
+    uint32_t terminated = 0u;
+    for (uint32_t tid = 5u; tid < MAX_TASKS; tid++) {
+        if (task_get(tid) != NULL && task_kill(tid) == 0) {
+            terminated++;
+        }
+    }
+    heap_stats_t after;
+    heap_stats(&after);
+    uint32_t released = (after.free >= before.free) ? after.free - before.free : 0u;
+    uint32_t active = 0u;
+    for (uint32_t tid = 0u; tid < MAX_TASKS; tid++) {
+        active += task_get(tid) != NULL;
+    }
+    g_exit_quiescent = 1u;
+
+    kprintf("[exit] apagando tareas de usuario...\r\n");
+    kprintf("[exit] tareas terminadas ............ %u\r\n", terminated);
+    kprintf("[exit] heap recuperado .............. %u B\r\n", released);
+    kprintf("[exit] heap libre: %u B (base: %u B) %s\r\n",
+            after.free, g_exit_base_free,
+            (after.free == g_exit_base_free && after.block_count == g_exit_base_blocks) ?
+            ">> SIN FUGAS" : ">> DIFERENCIA REPORTADA");
+    kprintf("[exit] tareas de infraestructura .... %u\r\n", active);
+    kprintf("[exit] sistema en reposo. Use reboot para reiniciar.\r\n");
+    uart_flush();
     return 0;
 }
 
@@ -1002,6 +1052,10 @@ static const prog_t k_progs[] = {
 #define N_PROGS (sizeof(k_progs) / sizeof(k_progs[0]))
 
 static int cmd_run(int argc, char **argv) {
+    if (g_exit_quiescent) {
+        shell_print_error("run", "sistema en reposo; use reboot", NULL);
+        return 1;
+    }
     if (argc < 2) {
         kprintf("Programas:\r\n");
         for (uint32_t i = 0; i < N_PROGS; i++) {
@@ -1070,6 +1124,11 @@ static int cmd_kill(int argc, char **argv) {
 /* ---- registro ---- */
 
 void shell_register_builtins(void) {
+    heap_stats_t boot_heap;
+    heap_stats(&boot_heap);
+    g_exit_base_free = boot_heap.free;
+    g_exit_base_blocks = boot_heap.block_count;
+    g_exit_quiescent = 0u;
     inject_register_command();
 #if SENTINEL_TRACE
     trace_register_command();
@@ -1100,5 +1159,6 @@ void shell_register_builtins(void) {
     cmd_register("history", cmd_history, "ultimos comandos", "history");
     cmd_register("run",     cmd_run,     "lanza una tarea de demostracion", "run [programa] [argumento]");
     cmd_register("kill",    cmd_kill,    "termina una tarea", "kill <tid>");
+    cmd_register("exit",    cmd_exit,    "termina tareas de usuario y verifica el heap", "exit");
     cmd_register("reboot",  cmd_reboot,  "reinicia el sistema", "reboot");
 }
