@@ -6,10 +6,6 @@
 </p>
 
 <p align="center">
-  <img src="assets/sentinel-os-logo-v2.png" alt="Sentinel OS Logo" width="230">
-</p>
-
-<p align="center">
   <strong>Desarrollo de un sistema operativo experimental para ESP32</strong>
   <br>
   Kernel propio · Planificación de tareas · Gestión de memoria · Instrumentación · Telemetría
