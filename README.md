@@ -1,23 +1,82 @@
+<div align="center">
+
+<img src="assets/upb-logo.png" alt="Universidad Pontificia Bolivariana" height="110">
+
 # Sentinel OS
-### Un sistema operativo bare-metal para ESP32 que mide el costo de observarse a sí mismo.
 
-<p align="center">
-  <img src="assets/upb-logo.png" alt="Universidad Pontificia Bolivariana" height="85">
-</p>
+### Un sistema operativo bare-metal para ESP32 que mide el costo de observarse a sí mismo
 
-<p align="center">
-  <strong>Desarrollo de un sistema operativo experimental para ESP32</strong>
-  <br>
-  Kernel propio · Planificación de tareas · Gestión de memoria · Instrumentación · Telemetría
-</p>
+**Desarrollo de un sistema operativo experimental para ESP32**
+<br>
+Kernel propio · Planificación de tareas · Gestión de memoria · Instrumentación · Telemetría
 
-<p align="center">
-  <img src="https://img.shields.io/badge/Language-C-blue?style=for-the-badge&logo=c" alt="C">
-  <img src="https://img.shields.io/badge/Platform-ESP32-red?style=for-the-badge&logo=espressif" alt="ESP32">
-  <img src="https://img.shields.io/badge/Architecture-Bare--Metal-orange?style=for-the-badge" alt="Bare Metal">
-  <img src="https://img.shields.io/badge/Telemetry-UART-green?style=for-the-badge" alt="UART">
-  <img src="https://img.shields.io/badge/Status-Experimental-blueviolet?style=for-the-badge" alt="Experimental">
-</p>
+<br>
+
+<img src="https://img.shields.io/badge/Language-C-blue?style=for-the-badge&logo=c" alt="C">
+<img src="https://img.shields.io/badge/Platform-ESP32-red?style=for-the-badge&logo=espressif" alt="ESP32">
+<img src="https://img.shields.io/badge/Architecture-Bare--Metal-orange?style=for-the-badge" alt="Bare Metal">
+<img src="https://img.shields.io/badge/Telemetry-UART-green?style=for-the-badge" alt="UART">
+<img src="https://img.shields.io/badge/Status-Experimental-blueviolet?style=for-the-badge" alt="Experimental">
+
+<br>
+
+[Descripción](#1-descripción-del-proyecto) ·
+[Arquitectura](#3-arquitectura-del-sistema) ·
+[Resultados](#7-resultados-experimentales) ·
+[Primeros pasos](#8-primeros-pasos) ·
+[Documentación](#15-documentación-adicional)
+
+</div>
+
+---
+
+## Resumen
+
+**Sentinel OS** es un kernel experimental escrito en C que se ejecuta directamente sobre el ESP32-WROOM-32, sin FreeRTOS. Además de implementar los componentes clásicos de un sistema operativo, **cuantifica experimentalmente cuánto cuesta observar su propio comportamiento** mediante instrumentación con contador de ciclos CCOUNT y telemetría binaria por UART.
+
+| | |
+|---|---|
+| **Qué es** | Kernel bare-metal con scheduler, heap, mutexes, detector de deadlocks, VFS en RAM y shell. |
+| **Qué lo distingue** | Instrumentación compilable (TRACE ON/OFF) y medición del costo de la observabilidad. |
+| **Cómo se observa** | Protocolo binario por UART con CRC16 hacia un puente Python y un dashboard local. |
+| **Estado** | Experimental. Resultados medidos en hardware con limitaciones documentadas (ver [sección 7](#7-resultados-experimentales) y [sección 13](#13-limitaciones-conocidas)). |
+
+### Inicio rápido
+
+No necesitas la placa para explorar el proyecto. Desde la raíz del repositorio:
+
+```bash
+# Ejecutar las pruebas en el computador (host tests)
+make test
+
+# Reproducir una captura UART real del detector de deadlocks
+python3 tools/bridge.py --replay experiments/e11/detector_20261021T042124Z_r01.uart --sink console
+```
+
+Para compilar, flashear y ejecutar sobre el ESP32 consulta [Primeros pasos](#8-primeros-pasos).
+
+---
+
+## Contenido
+
+1. [Descripción del proyecto](#1-descripción-del-proyecto)
+2. [Características principales](#2-características-principales)
+3. [Arquitectura del sistema](#3-arquitectura-del-sistema)
+4. [Sistema de instrumentación y observabilidad](#4-sistema-de-instrumentación-y-observabilidad)
+5. [Protocolo de comunicación UART](#5-protocolo-de-comunicación-uart)
+6. [Herramientas externas](#6-herramientas-externas)
+7. [Resultados experimentales](#7-resultados-experimentales)
+8. [Primeros pasos](#8-primeros-pasos)
+9. [Pruebas y validación](#9-pruebas-y-validación)
+10. [Estructura del repositorio](#10-estructura-del-repositorio)
+11. [Tecnologías y herramientas](#11-tecnologías-y-herramientas)
+12. [Decisiones de diseño](#12-decisiones-de-diseño)
+13. [Limitaciones conocidas](#13-limitaciones-conocidas)
+14. [Roadmap y trabajo futuro](#14-roadmap-y-trabajo-futuro)
+15. [Documentación adicional](#15-documentación-adicional)
+16. [Demo y material audiovisual](#16-demo-y-material-audiovisual)
+17. [Contexto académico](#17-contexto-académico)
+18. [Autor](#18-autor)
 
 ---
 
@@ -489,7 +548,23 @@ Además, no se pudo realizar una comparación GPIO-osciloscopio para validar la 
 
 Por esta razón, los resultados deben interpretarse dentro de las condiciones y limitaciones de cada experimento.
 
-### 7.3. Evidencias
+### 7.3. Gráficas
+
+**Distribución de la latencia observada de cambio de contexto** (TRACE ON, carga nominal, 57 940 cambios de contexto en cinco corridas de 30 s). La media de las medias por corrida es 22.355 µs; la distribución es multimodal, por lo que la media por sí sola no la describe por completo.
+
+<p align="center">
+  <img src="experiments/e11/switch_hist_20261021T012850Z.png" alt="Histograma de la latencia observada de cambio de contexto con TRACE ON bajo carga nominal" width="720">
+</p>
+
+**Costo de TRACE en CPU bajo carga nominal** (5 × 60 s por variante). El panel izquierdo respalda el costo de +1.285 puntos porcentuales de CPU reportado arriba.
+
+<p align="center">
+  <img src="experiments/e11/nominal_overhead_comparison.png" alt="Comparación de CPU ocupada y cambio de contexto observado entre TRACE=0 y TRACE=1 bajo carga nominal" width="720">
+</p>
+
+> **Nota de lectura:** el panel derecho de esta segunda figura proviene de una ventana de medición distinta a la del histograma. Sus valores no sustituyen la latencia de 22.355 µs de la batería de cambio de contexto ni deben combinarse con ella. El criterio de cada medición está en [`experiments/e11/README.md`](experiments/e11/README.md).
+
+### 7.4. Evidencias
 
 Los datos experimentales se encuentran disponibles en:
 
@@ -503,165 +578,9 @@ La evidencia incluye capturas UART, archivos CSV, resúmenes estadísticos, grá
 
 ---
 
-## 8. Tecnologías y herramientas utilizadas
+## 8. Primeros pasos
 
-### Hardware
-
-- ESP32-WROOM-32.
-- Arquitectura Xtensa LX6.
-- Interfaz serial UART.
-- USB para comunicación con el computador.
-
-### Desarrollo del kernel
-
-- C.
-- Assembly Xtensa.
-- GNU Make.
-- Xtensa ESP32 Toolchain.
-- Linker Script.
-- esptool.py.
-
-### Herramientas externas
-
-- Python 3.9 o superior.
-- PySerial.
-- SQLite.
-- HTML.
-- JavaScript.
-- PowerShell.
-- Linux / WSL.
-
-### Pruebas y análisis
-
-- GCC.
-- Python unittest.
-- Capturas UART.
-- CSV.
-- Scripts de análisis estadístico.
-
----
-
-## 9. Estructura del repositorio
-
-La organización del proyecto separa el código del kernel, las herramientas externas, las pruebas, la documentación y las evidencias experimentales.
-
-```text
-sentinel-os/
-│
-├── assets/
-│   ├── upb-logo.png
-│   ├── sentinel-os-logo.png
-│   └── sentinel-os-logo-v2.png
-│
-├── docs/
-│   ├── 00-MASTER.md
-│   ├── 01-ARQUITECTURA.md
-│   ├── 03-PROTOCOLO.md
-│   ├── 04-DECISIONES-ADR.md
-│   ├── 05-ESTADO.md
-│   ├── 08-REQUISITOS-PROFESOR.md
-│   ├── 09-RUBRICA-PROFESOR.md
-│   │
-│   ├── e12/
-│   │   ├── deliverables/
-│   │   ├── media/
-│   │   ├── video/
-│   │   ├── informe-tecnico.md
-│   │   └── preguntas-sustentacion.md
-│   │
-│   └── tasks/
-│
-├── experiments/
-│   └── e11/
-│       ├── master_results.csv
-│       ├── master_results.md
-│       ├── detector_runs.csv
-│       ├── memory_runs.csv
-│       ├── overhead_runs.csv
-│       ├── switchbench_runs.csv
-│       ├── telemetry_summary_20261021T002832Z.csv
-│       ├── *.uart
-│       ├── *.png
-│       └── README.md
-│
-├── kernel/
-│   ├── arch/
-│   │   └── xtensa/
-│   │       ├── start.S
-│   │       ├── vectors.S
-│   │       ├── context.h
-│   │       ├── cpu.h
-│   │       ├── irq.c
-│   │       └── irq.h
-│   │
-│   ├── core/
-│   │   ├── kmain.c
-│   │   ├── sched.c
-│   │   ├── task.c
-│   │   ├── sync.c
-│   │   ├── graph.c
-│   │   ├── detector.c
-│   │   ├── trace.c
-│   │   ├── transport.c
-│   │   ├── frame.c
-│   │   ├── alerts.c
-│   │   ├── panic.c
-│   │   └── time.c
-│   │
-│   ├── drivers/
-│   │   ├── gpio.c
-│   │   └── uart.c
-│   │
-│   ├── fs/
-│   │   ├── vfs.c
-│   │   └── procfs.c
-│   │
-│   ├── include/
-│   │   └── sentinel/
-│   │
-│   ├── lib/
-│   ├── mm/
-│   │   └── heap.c
-│   │
-│   └── shell/
-│       ├── shell.c
-│       ├── cmds.c
-│       ├── inject_cmd.c
-│       └── trace_cmd.c
-│
-├── tests/
-│   ├── test_heap.c
-│   ├── test_vfs.c
-│   ├── test_trace.c
-│   ├── test_frame.c
-│   ├── test_graph.c
-│   ├── test_alerts.c
-│   ├── test_bridge.py
-│   └── ...
-│
-├── tools/
-│   ├── bridge.py
-│   ├── capture.py
-│   ├── dashboard.html
-│   ├── run_board.sh
-│   ├── shell_test.py
-│   ├── e12/
-│   └── testbench/
-│
-├── Makefile
-├── linker.ld
-├── sentinel
-├── sentinel.ps1
-├── minios
-├── minios.ps1
-└── README.md
-```
-
----
-
-## 10. Instalación y configuración
-
-### 10.1. Requisitos
+### 8.1. Requisitos
 
 Para trabajar con Sentinel OS se necesita:
 
@@ -681,7 +600,7 @@ Para trabajar con Sentinel OS se necesita:
 
 El proyecto utiliza una compilación bare-metal mediante la herramienta `xtensa-esp32-elf-gcc`.
 
-### 10.2. Clonar el repositorio
+### 8.2. Clonar el repositorio
 
 ```bash
 git clone https://github.com/Ikeracevedo/sentinel-os.git
@@ -689,7 +608,7 @@ git clone https://github.com/Ikeracevedo/sentinel-os.git
 cd sentinel-os
 ```
 
-### 10.3. Verificar las herramientas
+### 8.3. Verificar las herramientas
 
 ```bash
 xtensa-esp32-elf-gcc --version
@@ -707,7 +626,7 @@ En Windows también puedes comprobar la disponibilidad de Python:
 py --version
 ```
 
-### 10.4. Compilar el kernel
+### 8.4. Compilar el kernel
 
 Para compilar el firmware con instrumentación habilitada:
 
@@ -729,7 +648,7 @@ make TRACE=1 TRANSPORT=1
 
 La opción `TRANSPORT=1` requiere `TRACE=1`.
 
-### 10.5. Consultar el tamaño del firmware
+### 8.5. Consultar el tamaño del firmware
 
 ```bash
 make size
@@ -737,9 +656,7 @@ make size
 
 Este comando permite consultar información sobre el tamaño del binario generado.
 
----
-
-## 11. Flashear el ESP32
+### 8.6. Flashear el ESP32
 
 El firmware compilado puede cargarse directamente en la memoria flash del ESP32.
 
@@ -767,13 +684,11 @@ Reemplaza el puerto por el correspondiente a tu dispositivo.
 
 **Advertencia:** flashear el dispositivo reemplaza el firmware que se encuentra actualmente en la placa. Verifica el puerto antes de ejecutar el comando.
 
----
-
-## 12. Ejecutar Sentinel OS
+### 8.7. Ejecutar Sentinel OS
 
 El repositorio incluye lanzadores para facilitar la ejecución desde Windows y Linux.
 
-### Windows PowerShell
+#### Windows PowerShell
 
 Desde la raíz del proyecto:
 
@@ -795,7 +710,7 @@ Para finalizar correctamente la ejecución:
 Ctrl + C
 ```
 
-### Linux / WSL
+#### Linux / WSL
 
 ```bash
 ./sentinel --port /dev/ttyUSB0
@@ -807,7 +722,7 @@ También existe un lanzador de compatibilidad:
 ./minios --port /dev/ttyUSB0
 ```
 
-### Comunicación directa mediante Python
+#### Comunicación directa mediante Python
 
 Si se desea ejecutar el puente de forma independiente:
 
@@ -819,7 +734,7 @@ El puerto `COM8` corresponde a una configuración utilizada durante los experime
 
 ---
 
-## 13. Pruebas y validación
+## 9. Pruebas y validación
 
 Sentinel OS cuenta con pruebas destinadas a validar diferentes componentes del kernel y de las herramientas externas.
 
@@ -876,7 +791,103 @@ La auditoría verifica la consistencia del conjunto de evidencias E11 y sus crit
 
 ---
 
-## 14. Decisiones de diseño
+## 10. Estructura del repositorio
+
+La organización del proyecto separa el código del kernel, las herramientas externas, las pruebas, la documentación y las evidencias experimentales.
+
+```text
+sentinel-os/
+├── assets/                  # Logos e imágenes del README
+│   ├── upb-logo.png
+│   ├── sentinel-os-logo.png
+│   └── sentinel-os-logo-v2.png
+│
+├── docs/                    # Documentación técnica y entregables
+│   ├── 00-MASTER.md
+│   ├── 01-ARQUITECTURA.md
+│   ├── 03-PROTOCOLO.md
+│   ├── 04-DECISIONES-ADR.md
+│   ├── 05-ESTADO.md
+│   ├── 08-REQUISITOS-PROFESOR.md
+│   ├── 09-RUBRICA-PROFESOR.md
+│   ├── 10-PLAN-MVP-REUNION.md
+│   ├── e12/                 # Informe técnico, preguntas, video y entregables
+│   └── tasks/               # Historias de usuario por etapa
+│
+├── experiments/
+│   └── e11/                 # Capturas UART, CSV, gráficas y resultados maestros
+│
+├── kernel/
+│   ├── arch/xtensa/         # Arranque, vectores, contexto e interrupciones
+│   ├── core/                # kmain, scheduler, tareas, sync, deadlocks, trace,
+│   │                        # transporte UART, tramas y alertas
+│   ├── drivers/             # GPIO y UART
+│   ├── fs/                  # VFS y procfs
+│   ├── include/sentinel/    # Cabeceras públicas del kernel
+│   ├── lib/                 # kprintf y operaciones de memoria
+│   ├── mm/                  # Heap (First Fit)
+│   └── shell/               # Shell, comandos e inyección de fallos
+│
+├── tests/                   # Pruebas en host (test_*.c) y en placa (*_board.*)
+│
+├── tools/
+│   ├── bridge.py            # Puente UART / reproducción de capturas
+│   ├── capture.py
+│   ├── dashboard.html       # Dashboard local
+│   ├── run_board.sh
+│   ├── shell_test.py
+│   ├── e10_*_board.py       # Escenarios sobre placa
+│   ├── e12/                 # Generación de entregables
+│   └── testbench/           # Baterías experimentales y análisis
+│
+├── Makefile
+├── linker.ld
+├── sentinel / sentinel.ps1  # Lanzadores (Linux/WSL y Windows)
+├── minios / minios.ps1      # Lanzadores de compatibilidad
+└── README.md
+```
+
+---
+
+## 11. Tecnologías y herramientas
+
+### Hardware
+
+- ESP32-WROOM-32.
+- Arquitectura Xtensa LX6.
+- Interfaz serial UART.
+- USB para comunicación con el computador.
+
+### Desarrollo del kernel
+
+- C.
+- Assembly Xtensa.
+- GNU Make.
+- Xtensa ESP32 Toolchain.
+- Linker Script.
+- esptool.py.
+
+### Herramientas externas
+
+- Python 3.9 o superior.
+- PySerial.
+- SQLite.
+- HTML.
+- JavaScript.
+- PowerShell.
+- Linux / WSL.
+
+### Pruebas y análisis
+
+- GCC.
+- Python unittest.
+- Capturas UART.
+- CSV.
+- Scripts de análisis estadístico.
+
+---
+
+## 12. Decisiones de diseño
 
 El desarrollo de Sentinel OS contempla decisiones de arquitectura que buscan mantener un equilibrio entre rendimiento, observabilidad y simplicidad.
 
@@ -912,7 +923,7 @@ Las decisiones completas están documentadas en:
 
 ---
 
-## 15. Limitaciones conocidas
+## 13. Limitaciones conocidas
 
 Sentinel OS es un proyecto experimental y todavía tiene aspectos pendientes de desarrollo.
 
@@ -930,7 +941,7 @@ Estas limitaciones forman parte del proceso de investigación y permiten estable
 
 ---
 
-## 16. Roadmap y trabajo futuro
+## 14. Roadmap y trabajo futuro
 
 El desarrollo de Sentinel OS está organizado mediante etapas de implementación, validación y documentación.
 
@@ -950,7 +961,7 @@ El estado de las etapas y sus criterios de aceptación se mantiene en la documen
 
 ---
 
-## 17. Documentación adicional
+## 15. Documentación adicional
 
 Sentinel OS cuenta con documentación técnica complementaria para profundizar en sus componentes.
 
@@ -967,7 +978,7 @@ Sentinel OS cuenta con documentación técnica complementaria para profundizar e
 
 ---
 
-## 18. Demo y material audiovisual
+## 16. Demo y material audiovisual
 
 El proyecto dispone de material de reproducción de capturas UART y evidencias visuales de las pruebas realizadas.
 
@@ -985,7 +996,11 @@ El material de preparación se encuentra en:
 
 ---
 
-## 19. Contexto académico
+## 17. Contexto académico
+
+<p align="center">
+  <img src="assets/upb-logo.png" alt="Universidad Pontificia Bolivariana" height="70">
+</p>
 
 **Sentinel OS** es un proyecto de desarrollo e investigación académica orientado al estudio práctico de los fundamentos de sistemas operativos, arquitectura de computadores, programación de bajo nivel, concurrencia, administración de memoria e instrumentación de sistemas embebidos.
 
@@ -995,22 +1010,20 @@ El proyecto busca aplicar conceptos teóricos mediante la construcción de una i
 
 ---
 
-## 20. Autor
+## 18. Autor
 
 **Iker Acevedo**
 
 Estudiante de Ingeniería de Sistemas y desarrollador de software, apasionado por la tecnología e interesado en sistemas operativos, sistemas empresariales, arquitectura de computadores, desarrollo de software, inteligencia artificial e infraestructura tecnológica.
 
-GitHub: [@Ikeracevedo](https://github.com/Ikeracevedo)
-
-Repositorio: [Sentinel OS](https://github.com/Ikeracevedo/sentinel-os)
+GitHub: [@Ikeracevedo](https://github.com/Ikeracevedo) · Repositorio: [Sentinel OS](https://github.com/Ikeracevedo/sentinel-os)
 
 ---
 
 <p align="center">
   <strong>Sentinel OS</strong>
   <br>
-  <em>Entiende tu sistema. Observar su comportamiento. Mide cada una de sus acciones.</em>
+  <em>Entiende tu sistema. Observa su comportamiento. Mide cada una de sus acciones.</em>
   <br><br>
-  Desarrollado por Iker Acevedo
+  Desarrollado por Iker Acevedo · Universidad Pontificia Bolivariana
 </p>
